@@ -4,36 +4,32 @@ const cors = require('cors');
 const helmet = require('helmet');
 const http = require('http');
 const { pool } = require('./config/database');
-const setupWebSocket = require('./config/websocket');
 const { authenticate } = require('./middlewares');
+const { setupWebSocket, rideConnections } = require('./config/websocket');
 require('dotenv').config();
 
 const app = express();
+
+// Middleware
 app.use(helmet());
 app.use(cors());
 app.use(bodyParser.json());
 
-// Create HTTP server and WebSocket server
+// Create HTTP server
 const server = http.createServer(app);
+
+// Setup WebSocket
 const { wss, cleanup: cleanupWebSocket } = setupWebSocket(server);
 
-// Import routes
-const authRoutes = require('./routes/auth');
-const rideRoutes = require('./routes/rides');
-const messageRoutes = require('./routes/messages');
-const profileRoutes = require('./routes/profile');
-const companyRoutes = require('./routes/companies');
-const sosRoutes = require('./routes/sos');
+// Routes
+app.use('/auth', require('./routes/auth'));
+app.use('/rides', require('./routes/rides'));
+app.use('/messages', require('./routes/messages'));
+app.use('/profile', require('./routes/profile'));
+app.use('/companies', require('./routes/companies'));
+app.use('/sos', require('./routes/sos'));
 
-// Use routes
-app.use('/auth', authRoutes);
-app.use('/rides', rideRoutes);
-app.use('/messages', messageRoutes);
-app.use('/profile', profileRoutes);
-app.use('/companies', companyRoutes);
-app.use('/sos', sosRoutes);
-
-// Error handling middleware
+// Error handling
 app.use((err, req, res, next) => {
   console.error('Unhandled error:', err);
   
@@ -47,17 +43,43 @@ app.use((err, req, res, next) => {
   });
 });
 
-// Start Server
+// Server configuration
 const PORT = process.env.PORT || 5000;
-server.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
 
-// Cleanup on server close
-process.on('SIGTERM', () => {
-  cleanupWebSocket();
-  server.close();
-  pool.end();
-});
+// Start server
+const startServer = () => {
+  server.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
+  });
+};
 
-module.exports = app;
+// Cleanup
+const cleanup = async () => {
+  try {
+    cleanupWebSocket();
+    server.close();
+    await pool.end();
+    console.log('Server and database connections closed gracefully');
+  } catch (err) {
+    console.error('Error during cleanup:', err);
+    process.exit(1);
+  }
+};
+
+process.on('SIGTERM', cleanup);
+process.on('SIGINT', cleanup);
+
+// Export for testing and potential module use
+module.exports = {
+  app,
+  server,
+  wss,
+  PORT,
+  startServer,
+  cleanup
+};
+
+// Start the server if not in test environment
+if (process.env.NODE_ENV !== 'test') {
+  startServer();
+}

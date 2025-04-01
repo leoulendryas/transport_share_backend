@@ -1,66 +1,149 @@
 const express = require('express');
 const { query } = require('../config/database');
 const { authenticate, messageLimiter } = require('../middlewares');
-const { rideConnections } = require('../config/websocket');
+const { broadcastMessage, rideConnections } = require('../config/websocket');
+const validator = require('validator');
+const { MAX_MESSAGE_LENGTH } = require('../config/constants');
 
 const router = express.Router();
 
-router.get('/rides/:id/messages', async (req, res) => {
+// Enhanced message validation
+function isValidMessage(content) {
+  return typeof content === 'string' && 
+         content.trim().length > 0 && 
+         content.length <= MAX_MESSAGE_LENGTH &&
+         !validator.contains(content, ['<script>', '</script>']);
+}
+
+// Get message history with pagination
+router.get('/rides/:id/messages', authenticate, async (req, res) => {
   try {
-    const rideId = req.params.id;
-    if (!rideId || isNaN(rideId)) {
-      return res.status(400).json({ error: 'Invalid rideId' });
+    const rideId = parseInt(req.params.id);
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 50;
+    const offset = (page - 1) * limit;
+
+    if (isNaN(rideId)) {
+      return res.status(400).json({ 
+        error: 'Invalid rideId',
+        details: 'rideId must be a valid number'
+      });
     }
 
-    const result = await query(
+    // Verify ride access
+    const rideAccess = await query(
+      'SELECT 1 FROM user_rides WHERE user_id = $1 AND ride_id = $2',
+      [req.user.id, rideId]
+    );
+    
+    if (!rideAccess.rows[0]) {
+      return res.status(403).json({ 
+        error: 'Access denied',
+        details: 'You are not a participant in this ride'
+      });
+    }
+
+    // Get messages with pagination
+    const messagesResult = await query(
       `SELECT m.*, u.email 
        FROM messages m
        JOIN users u ON m.user_id = u.id
        WHERE ride_id = $1 
-       ORDER BY created_at ASC`,
+       ORDER BY created_at DESC
+       LIMIT $2 OFFSET $3`,
+      [rideId, limit, offset]
+    );
+
+    // Get total count for pagination metadata
+    const countResult = await query(
+      'SELECT COUNT(*) FROM messages WHERE ride_id = $1',
       [rideId]
     );
 
-    res.json(result.rows);
+    res.json({
+      messages: messagesResult.rows.reverse(), // Reverse to maintain chronological order
+      pagination: {
+        page,
+        limit,
+        total: parseInt(countResult.rows[0].count),
+        totalPages: Math.ceil(countResult.rows[0].count / limit)
+      }
+    });
   } catch (error) {
-    res.status(500).json({ error: 'Failed to fetch messages' });
+    console.error('Failed to fetch messages:', error);
+    res.status(500).json({ 
+      error: 'Failed to fetch messages',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
   }
 });
 
+// Send new message
 router.post('/rides/:id/messages', authenticate, messageLimiter, async (req, res) => {
   try {
     const { content } = req.body;
-    const rideId = req.params.id;
+    const rideId = parseInt(req.params.id);
     const userId = req.user.id;
 
-    if (!content) {
-      return res.status(400).json({ error: 'Message content is required' });
+    if (isNaN(rideId)) {
+      return res.status(400).json({ 
+        error: 'Invalid rideId',
+        details: 'rideId must be a valid number'
+      });
     }
+
+    if (!isValidMessage(content)) {
+      return res.status(400).json({ 
+        error: 'Invalid message content',
+        details: `Message must be 1-${MAX_MESSAGE_LENGTH} characters and not contain scripts`
+      });
+    }
+
+    // Verify ride access
+    const rideAccess = await query(
+      'SELECT 1 FROM user_rides WHERE user_id = $1 AND ride_id = $2',
+      [userId, rideId]
+    );
+    
+    if (!rideAccess.rows[0]) {
+      return res.status(403).json({ 
+        error: 'Access denied',
+        details: 'You are not a participant in this ride'
+      });
+    }
+
+    // Sanitize content
+    const sanitizedContent = validator.escape(content.trim());
 
     const result = await query(
       `INSERT INTO messages (ride_id, user_id, content) 
        VALUES ($1, $2, $3) 
-       RETURNING *`,
-      [rideId, userId, content]
+       RETURNING *, (SELECT email FROM users WHERE id = $2) as user_email`,
+      [rideId, userId, sanitizedContent]
     );
 
-    const clients = rideConnections.get(rideId);
-    if (clients) {
-      clients.forEach(client => {
-        if (client.readyState === WebSocket.OPEN) {
-          client.send(JSON.stringify({
-            id: result.rows[0].id,
-            user_id: userId,
-            content,
-            timestamp: result.rows[0].created_at
-          }));
-        }
-      });
+    const newMessage = {
+      type: 'message',
+      id: result.rows[0].id.toString(),  // Ensure string type for consistency with WS
+      userId: userId.toString(),         // Ensure string type
+      userEmail: result.rows[0].user_email,
+      content: sanitizedContent,
+      timestamp: result.rows[0].created_at.toISOString(),
+      fromHttp: true
+    };
+
+    // Only broadcast if there are active WS connections
+    if (rideConnections.has(rideId)) {
+      await broadcastMessage(rideId, newMessage);
     }
 
-    res.json(result.rows[0]);
+    res.status(201).json(newMessage);
   } catch (error) {
-    res.status(500).json({ error: 'Failed to send message' });
+    console.error('Failed to send message:', error);
+    res.status(500).json({ 
+      error: 'Failed to send message',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
   }
 });
 

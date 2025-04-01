@@ -6,11 +6,11 @@ const pool = new Pool({
   host: process.env.DB_HOST,
   database: process.env.DB_NAME,
   password: process.env.DB_PASSWORD,
-  port: process.env.DB_PORT,
-  ssl: process.env.DB_SSL ? { rejectUnauthorized: false } : false,
-  max: 20,
+  port: process.env.DB_PORT || 5432,
+  ssl: false,
+  max: 5,
   idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 2000
+  connectionTimeoutMillis: 10000
 });
 
 // Database query helper with logging

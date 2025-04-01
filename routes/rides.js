@@ -1,5 +1,6 @@
 const express = require('express');
-const { query } = require('../config/database');
+const { pool, query } = require('../config/database');
+const { rideConnections } = require('../config/websocket');
 const { authenticate, validateCoordinates, paginate, cache } = require('../middlewares');
 
 const router = express.Router();
@@ -148,6 +149,66 @@ router.get('/', paginate, async (req, res) => {
   }
 });
 
+router.get('/:id', authenticate, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const rideId = req.params.id;
+    const userId = req.user.id;
+
+    // Get ride details
+    const rideResult = await client.query(
+      `SELECT 
+        r.*,
+        u.email as driver_email,
+        ST_X(r.from_location::geometry) as from_lng,
+        ST_Y(r.from_location::geometry) as from_lat,
+        ST_X(r.to_location::geometry) as to_lng,
+        ST_Y(r.to_location::geometry) as to_lat,
+        ARRAY_AGG(rc.company_id) as company_ids,
+        EXISTS(SELECT 1 FROM user_rides WHERE ride_id = r.id AND user_id = $2) as is_participant,
+        (r.driver_id = $2) as is_driver
+      FROM rides r
+      JOIN users u ON r.driver_id = u.id
+      LEFT JOIN ride_company_mapping rc ON r.id = rc.ride_id
+      WHERE r.id = $1
+      GROUP BY r.id, u.email`,
+      [rideId, userId]
+    );
+
+    if (rideResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Ride not found' });
+    }
+
+    // Get participants
+    const participantsResult = await client.query(
+      `SELECT 
+        u.id, u.email, 
+        (ur.user_id = r.driver_id) as is_driver
+      FROM user_rides ur
+      JOIN users u ON ur.user_id = u.id
+      JOIN rides r ON ur.ride_id = r.id
+      WHERE ur.ride_id = $1`,
+      [rideId]
+    );
+
+    const response = {
+      ...rideResult.rows[0],
+      participants: participantsResult.rows,
+      // Include participation status for current user
+      current_user: {
+        is_participant: rideResult.rows[0].is_participant,
+        is_driver: rideResult.rows[0].is_driver
+      }
+    };
+
+    res.json(response);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch ride details' });
+  } finally {
+    client.release();
+  }
+});
+
 router.get('/:id/check-participation', authenticate, async (req, res) => {
   try {
     const rideId = req.params.id;
@@ -177,6 +238,7 @@ router.post('/:id/join', authenticate, async (req, res) => {
     const rideId = req.params.id;
     const userId = req.user.id;
 
+    // Check if user already joined
     const existingCheck = await client.query(
       'SELECT 1 FROM user_rides WHERE user_id = $1 AND ride_id = $2',
       [userId, rideId]
@@ -186,34 +248,46 @@ router.post('/:id/join', authenticate, async (req, res) => {
       throw new Error('User already joined this ride');
     }
 
+    // Get ride details with existence check
     const ride = await client.query(
       `SELECT status, seats_available, departure_time 
        FROM rides WHERE id = $1 FOR UPDATE`,
       [rideId]
     );
 
-    if (new Date(ride.rows[0].departure_time) < new Date()) {
+    if (ride.rows.length === 0) {
+      throw new Error('Ride not found');
+    }
+
+    const rideData = ride.rows[0]; // Now safe to access
+
+    // Validate ride conditions
+    if (new Date(rideData.departure_time) < new Date()) {
       throw new Error('Cannot join a ride that has already departed');
     }
 
-    if (ride.rows[0].status !== 'active') {
+    if (rideData.status !== 'active') {
       throw new Error('Ride is not active');
     }
-    if (ride.rows[0].seats_available < 1) {
+
+    if (rideData.seats_available < 1) {
       throw new Error('Ride is full');
     }
 
+    // Update seats
     await client.query(
       'UPDATE rides SET seats_available = seats_available - 1 WHERE id = $1',
       [rideId]
     );
 
+    // Create user-ride association
     await client.query(
       'INSERT INTO user_rides (user_id, ride_id) VALUES ($1, $2)',
       [userId, rideId]
     );
 
-    if (ride.rows[0].seats_available - 1 === 0) {
+    // Mark as full if no seats left
+    if (rideData.seats_available - 1 === 0) {
       await client.query(
         'UPDATE rides SET status = \'full\' WHERE id = $1',
         [rideId]
@@ -222,6 +296,7 @@ router.post('/:id/join', authenticate, async (req, res) => {
 
     await client.query('COMMIT');
     
+    // Notify WebSocket clients
     const clients = rideConnections.get(rideId);
     if (clients) {
       clients.forEach(client => {

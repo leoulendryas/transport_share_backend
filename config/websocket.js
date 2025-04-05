@@ -56,11 +56,14 @@ const setupWebSocket = (server) => {
     }
   });
 
+  // Ping all clients periodically
   const interval = setInterval(() => {
     wss.clients.forEach((ws) => {
-      if (!ws.isAlive) return ws.terminate();
+      if (!ws.isAlive) {
+        console.log('Terminating unresponsive connection');
+        return ws.terminate();
+      }
       ws.isAlive = false;
-      ws.send(JSON.stringify({ type: 'ping', timestamp: Date.now() }));
       try {
         ws.ping();
       } catch (error) {
@@ -85,115 +88,171 @@ const setupWebSocket = (server) => {
     resetHeartbeat();
 
     try {
-      const token = new URL(req.url, `ws://${req.headers.host}`).searchParams.get('token');
-      const rideIdParam = new URL(req.url, `ws://${req.headers.host}`).searchParams.get('rideId');
+      // Validate origin if in production
+      if (process.env.NODE_ENV === 'production') {
+        const origin = req.headers.origin;
+        if (!origin || !origin.includes(process.env.ALLOWED_ORIGIN)) {
+          throw new Error('Invalid origin');
+        }
+      }
 
       // Parse token and rideId from URL
-      if (!token || !rideIdParam) {
+      const url = new URL(req.url, `ws://${req.headers.host}`);
+      const token = url.searchParams.get('token');
+      rideId = url.searchParams.get('rideId');
+      
+      if (!token || !rideId) {
         throw new Error('Authentication required');
       }
 
+      // Verify JWT token
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
-      const userCheck = await query('SELECT id FROM users WHERE id = $1', [decoded.id]);
-      if (!userCheck.rows[0]) throw new Error('Invalid user');
       userId = decoded.id;
 
-      // Initialize connection tracking for the ride
-      if (!rideConnections.has(rideIdParam)) {
-        rideConnections.set(rideIdParam, new Set());
+      // Verify user exists
+      const userCheck = await query('SELECT id, email FROM users WHERE id = $1', [userId]);
+      if (!userCheck.rows[0]) {
+        throw new Error('Invalid user');
       }
-      const clients = rideConnections.get(rideIdParam);
-      clients.add(ws);
+      
+      // Verify ride access
+      const rideAccess = await query(
+        'SELECT 1 FROM user_rides WHERE user_id = $1 AND ride_id = $2',
+        [userId, rideId]
+      );
+      if (!rideAccess.rows[0]) {
+        throw new Error('Access denied');
+      }
 
-      // Initialize user connection tracking
+      // Initialize connection tracking
+      if (!rideConnections.has(rideId)) {
+        rideConnections.set(rideId, new Set());
+      }
+      rideConnections.get(rideId).add(ws);
+
       if (!userConnections.has(userId)) {
         userConnections.set(userId, new Set());
       }
       userConnections.get(userId).add(ws);
 
-      // Notify other clients of the new connection
-      broadcastMessage(rideIdParam, {
-        type: 'user_connected',
-        userId: userId,
-        action: '+'
-      });
-
-      // Message history logic (same as before)
+      // Send message history in batches
       const messageHistory = await query(
         `SELECT m.*, u.email 
          FROM messages m
          JOIN users u ON m.user_id = u.id
          WHERE ride_id = $1 
          ORDER BY created_at ASC`,
-        [rideIdParam]
+        [rideId]
       );
-      // Send message history logic (same as before)
-      
+
+      // Split history into batches
+      const batches = [];
+      for (let i = 0; i < messageHistory.rows.length; i += MESSAGE_HISTORY_BATCH_SIZE) {
+        batches.push(messageHistory.rows.slice(i, i + MESSAGE_HISTORY_BATCH_SIZE));
+      }
+
+      for (const [index, batch] of batches.entries()) {
+        ws.send(JSON.stringify({
+          type: 'history',
+          messages: batch,
+          isLastBatch: index === batches.length - 1
+        }));
+      }
+
+      // Message handler
       ws.on('message', async (message) => {
         try {
           resetHeartbeat();
+          
           const data = JSON.parse(message);
-
+          
+          // Handle ping/pong
           if (data.type === 'ping') {
-            ws.send(JSON.stringify({ type: 'pong', timestamp: data.timestamp }));
-            return;
+            return ws.pong();
           }
-
+          
+          // Handle new messages
           if (data.type === 'message') {
-            const result = await query(
-              'INSERT INTO messages (ride_id, user_id, content) VALUES ($1, $2, $3) RETURNING *',
-              [rideIdParam, decoded.id, data.content]
-            );
-
-            // Broadcast the message to all other clients
-            broadcastMessage(rideIdParam, {
-              type: 'message',
-              content: data.content,
-              userId: decoded.id,
-              timestamp: result.rows[0].created_at.toISOString()
-            });
+            // Rate limiting
+            const now = Date.now();
+            const userCounts = wsMessageCount.get(userId) || [];
+            const recentCounts = userCounts.filter(t => now - t < 60000);
+            
+            if (recentCounts.length >= RATE_LIMIT) {
+              console.log(`Rate limit exceeded for user ${userId}`);
+              return ws.close(1008, 'Rate limit exceeded');
+            }
+            
+            wsMessageCount.set(userId, [...recentCounts, now]);
+            
+            // Validate message
+            if (!isValidMessage(data.content)) {
+              throw new Error(`Message content must be 1-${MAX_MESSAGE_LENGTH} characters`);
+            }
+            
+            // Sanitize message content
+            const sanitizedContent = data.content.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            
+            // Insert message if not from HTTP
+            if (!data.fromHttp) {
+              const result = await query(
+                'INSERT INTO messages (ride_id, user_id, content) VALUES ($1, $2, $3) RETURNING *',
+                [rideId, userId, sanitizedContent]
+              );
+              
+              await broadcastMessage(rideId, {
+                type: 'message',
+                id: result.rows[0].id,
+                userId,
+                userEmail: userCheck.rows[0].email,
+                content: sanitizedContent,
+                timestamp: result.rows[0].created_at.toISOString()
+              });
+            }
           }
         } catch (error) {
-          ws.send(JSON.stringify({ 
+          console.error('WebSocket message error:', error);
+          ws.send(JSON.stringify({
             type: 'error',
-            message: error.message 
+            message: error.message
           }));
         }
       });
 
+      ws.on('pong', () => {
+        ws.isAlive = true;
+        resetHeartbeat();
+      });
+
+      // Cleanup on close
       ws.on('close', () => {
+        clearTimeout(heartbeatTimeout);
+        
         // Remove from ride connections
-        const rideClients = rideConnections.get(rideIdParam);
+        const rideClients = rideConnections.get(rideId);
         if (rideClients) {
           rideClients.delete(ws);
-          // Notify other clients of the removed connection
-          broadcastMessage(rideIdParam, {
-            type: 'user_disconnected',
-            userId: userId,
-            action: '-'
-          });
-
           if (rideClients.size === 0) {
-            rideConnections.delete(rideIdParam);
+            rideConnections.delete(rideId);
           }
         }
-
+        
         // Remove from user connections
-        if (userConnections.has(userId)) {
+        if (userId) {
           const userWsSet = userConnections.get(userId);
-          userWsSet.delete(ws);
-          if (userWsSet.size === 0) {
-            userConnections.delete(userId);
-            wsMessageCount.delete(userId);
+          if (userWsSet) {
+            userWsSet.delete(ws);
+            if (userWsSet.size === 0) {
+              userConnections.delete(userId);
+              wsMessageCount.delete(userId);
+            }
           }
         }
       });
 
     } catch (error) {
-      ws.send(JSON.stringify({ 
-        type: 'error',
-        message: error.message 
-      }));
+      console.error('WebSocket connection error:', error);
+      ws.close(1008, error.message);
     }
   });
 
@@ -206,4 +265,9 @@ const setupWebSocket = (server) => {
   };
 };
 
-module.exports = setupWebSocket;
+module.exports = {
+  setupWebSocket,
+  rideConnections,
+  userConnections,
+  broadcastMessage
+};

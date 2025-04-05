@@ -10,6 +10,9 @@ require('dotenv').config();
 
 const app = express();
 
+// Enable trust proxy to handle X-Forwarded-For header correctly
+app.set('trust proxy', true);
+
 // Middleware
 app.use(helmet());
 app.use(cors());

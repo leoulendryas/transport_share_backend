@@ -209,6 +209,61 @@ router.get('/:id', authenticate, async (req, res) => {
   }
 });
 
+router.get('/user/active-rides', authenticate, paginate, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const userId = req.user.id;
+    const offset = (req.query.page - 1) * req.query.limit;
+
+    const queryText = `
+      SELECT 
+        r.*,
+        u.email as driver_email,
+        COUNT(ur.user_id) as participants,
+        ST_X(r.from_location::geometry) as from_lng,
+        ST_Y(r.from_location::geometry) as from_lat,
+        ST_X(r.to_location::geometry) as to_lng,
+        ST_Y(r.to_location::geometry) as to_lat,
+        ARRAY_AGG(rc.company_id) as company_ids
+      FROM rides r
+      JOIN users u ON r.driver_id = u.id
+      LEFT JOIN user_rides ur ON r.id = ur.ride_id
+      LEFT JOIN ride_company_mapping rc ON r.id = rc.ride_id
+      WHERE r.driver_id = $1
+        AND r.status = 'active'
+        AND (r.departure_time IS NULL OR r.departure_time > NOW())
+      GROUP BY r.id, u.email
+      ORDER BY r.departure_time ASC
+      LIMIT $2 OFFSET $3
+    `;
+
+    const result = await client.query(queryText, [userId, req.query.limit, offset]);
+
+    const countResult = await client.query(
+      `SELECT COUNT(*) as total FROM rides r
+       WHERE r.driver_id = $1
+         AND r.status = 'active'
+         AND (r.departure_time IS NULL OR r.departure_time > NOW())`,
+      [userId]
+    );
+
+    const response = {
+      results: result.rows,
+      pagination: {
+        page: req.query.page,
+        limit: req.query.limit,
+        total: parseInt(countResult.rows[0].total, 10)
+      }
+    };
+
+    res.json(response);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch user rides' });
+  } finally {
+    client.release();
+  }
+});
+
 router.get('/:id/check-participation', authenticate, async (req, res) => {
   try {
     const rideId = req.params.id;
@@ -259,10 +314,10 @@ router.post('/:id/join', authenticate, async (req, res) => {
       throw new Error('Ride not found');
     }
 
-    const rideData = ride.rows[0]; // Now safe to access
+    const rideData = ride.rows[0];
 
     // Validate ride conditions
-    if (new Date(rideData.departure_time) < new Date()) {
+    if (rideData.departure_time && new Date(rideData.departure_time) < new Date()) {
       throw new Error('Cannot join a ride that has already departed');
     }
 

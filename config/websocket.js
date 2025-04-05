@@ -88,13 +88,18 @@ const setupWebSocket = (server) => {
     resetHeartbeat();
 
     try {
-      // Validate origin if in production
       if (process.env.NODE_ENV === 'production') {
         const origin = req.headers.origin;
-        if (!origin || !origin.includes(process.env.ALLOWED_ORIGIN)) {
+        console.log('🧪 Incoming origin:', origin);
+        console.log('✅ ALLOWED_ORIGINS:', process.env.ALLOWED_ORIGINS);
+      
+        const allowedOrigins = process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim());
+      
+        if (!origin || !allowedOrigins.includes(origin)) {
+          console.log('❌ Origin not allowed:', origin);
           throw new Error('Invalid origin');
         }
-      }
+      }      
 
       // Parse token and rideId from URL
       const url = new URL(req.url, `ws://${req.headers.host}`);

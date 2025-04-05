@@ -90,13 +90,15 @@ const setupWebSocket = (server) => {
     try {
       if (process.env.NODE_ENV === 'production') {
         const origin = req.headers.origin;
-        console.log('🧪 Incoming origin:', origin);
-        console.log('✅ ALLOWED_ORIGINS:', process.env.ALLOWED_ORIGINS);
-      
         const allowedOrigins = process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim());
       
         if (!origin || !allowedOrigins.includes(origin)) {
-          console.log('❌ Origin not allowed:', origin);
+          throw new Error('Invalid origin');
+        }
+      } else {
+        // ✅ Development: allow all localhost origins
+        const origin = req.headers.origin;
+        if (!origin || !origin.startsWith('http://localhost')) {
           throw new Error('Invalid origin');
         }
       }      

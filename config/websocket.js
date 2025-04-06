@@ -93,6 +93,7 @@ const setupWebSocket = (server) => {
 
     try {
       // Origin validation
+      /*
       if (process.env.NODE_ENV === 'production') {
         const origin = req.headers.origin;
         const allowedOrigins = process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim());
@@ -101,7 +102,7 @@ const setupWebSocket = (server) => {
           throw new Error('Invalid origin');
         }
       }
-
+      */
       // Parse token and rideId from URL
       const url = new URL(req.url, `ws://${req.headers.host}`);
       const token = url.searchParams.get('token');

@@ -224,12 +224,15 @@ router.get('/user/active-rides', authenticate, paginate, async (req, res) => {
         ST_Y(r.from_location::geometry) as from_lat,
         ST_X(r.to_location::geometry) as to_lng,
         ST_Y(r.to_location::geometry) as to_lat,
-        ARRAY_AGG(rc.company_id) as company_ids
+        ARRAY_AGG(rc.company_id) as company_ids,
+        MAX(CASE WHEN ur.user_id = $1 THEN ur.is_driver ELSE false END) as is_driver
       FROM rides r
       JOIN users u ON r.driver_id = u.id
       LEFT JOIN user_rides ur ON r.id = ur.ride_id
       LEFT JOIN ride_company_mapping rc ON r.id = rc.ride_id
-      WHERE r.driver_id = $1
+      WHERE r.id IN (
+        SELECT ride_id FROM user_rides WHERE user_id = $1
+      )
         AND r.status = 'active'
         AND (r.departure_time IS NULL OR r.departure_time > NOW())
       GROUP BY r.id, u.email
@@ -240,8 +243,10 @@ router.get('/user/active-rides', authenticate, paginate, async (req, res) => {
     const result = await client.query(queryText, [userId, req.query.limit, offset]);
 
     const countResult = await client.query(
-      `SELECT COUNT(*) as total FROM rides r
-       WHERE r.driver_id = $1
+      `SELECT COUNT(DISTINCT r.id) as total 
+       FROM rides r
+       JOIN user_rides ur ON r.id = ur.ride_id
+       WHERE ur.user_id = $1
          AND r.status = 'active'
          AND (r.departure_time IS NULL OR r.departure_time > NOW())`,
       [userId]

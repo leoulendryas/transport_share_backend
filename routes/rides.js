@@ -216,22 +216,23 @@ router.get('/user/active-rides', authenticate, paginate, async (req, res) => {
     const offset = (req.query.page - 1) * req.query.limit;
 
     const queryText = `
-      SELECT DISTINCT
+      SELECT 
         r.*,
         u.email as driver_email,
-        (SELECT COUNT(*) FROM user_rides WHERE ride_id = r.id) as participants,
+        COUNT(ur.user_id) as participants,
         ST_X(r.from_location::geometry) as from_lng,
         ST_Y(r.from_location::geometry) as from_lat,
         ST_X(r.to_location::geometry) as to_lng,
         ST_Y(r.to_location::geometry) as to_lat,
-        (SELECT ARRAY_AGG(company_id) FROM ride_company_mapping WHERE ride_id = r.id) as company_ids,
-        (SELECT is_driver FROM user_rides WHERE user_id = $1 AND ride_id = r.id) as is_driver
+        ARRAY_AGG(rc.company_id) as company_ids
       FROM rides r
       JOIN users u ON r.driver_id = u.id
-      JOIN user_rides ur ON r.id = ur.ride_id
-      WHERE ur.user_id = $1
-        AND r.status IN ('active', 'full')
+      LEFT JOIN user_rides ur ON r.id = ur.ride_id
+      LEFT JOIN ride_company_mapping rc ON r.id = rc.ride_id
+      WHERE r.driver_id = $1
+        AND r.status = 'active'
         AND (r.departure_time IS NULL OR r.departure_time > NOW())
+      GROUP BY r.id, u.email
       ORDER BY r.departure_time ASC
       LIMIT $2 OFFSET $3
     `;
@@ -239,11 +240,9 @@ router.get('/user/active-rides', authenticate, paginate, async (req, res) => {
     const result = await client.query(queryText, [userId, req.query.limit, offset]);
 
     const countResult = await client.query(
-      `SELECT COUNT(DISTINCT r.id) as total 
-       FROM rides r
-       JOIN user_rides ur ON r.id = ur.ride_id
-       WHERE ur.user_id = $1
-         AND r.status IN ('active', 'full')
+      `SELECT COUNT(*) as total FROM rides r
+       WHERE r.driver_id = $1
+         AND r.status = 'active'
          AND (r.departure_time IS NULL OR r.departure_time > NOW())`,
       [userId]
     );
@@ -259,8 +258,7 @@ router.get('/user/active-rides', authenticate, paginate, async (req, res) => {
 
     res.json(response);
   } catch (error) {
-    console.error('Error in /user/active-rides:', error); // Log the error for debugging
-    res.status(500).json({ error: 'Failed to fetch user rides', details: error.message });
+    res.status(500).json({ error: 'Failed to fetch user rides' });
   } finally {
     client.release();
   }

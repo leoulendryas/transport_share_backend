@@ -7,9 +7,9 @@ const deflate = util.promisify(zlib.deflate);
 require('dotenv').config();
 
 // Constants
-const PING_INTERVAL = 25000;
+const PING_INTERVAL = 20000; // Reduced from 25s to match client
 const HEARTBEAT_TIMEOUT = 30000;
-const RATE_LIMIT = 30; // messages per minute
+const RATE_LIMIT = 30;
 const MESSAGE_HISTORY_BATCH_SIZE = 50;
 const MAX_MESSAGE_LENGTH = 500;
 
@@ -17,7 +17,7 @@ const rideConnections = new Map();
 const userConnections = new Map();
 const wsMessageCount = new Map();
 
-// Helper function to broadcast messages to all clients in a ride
+// Helper function to broadcast messages
 async function broadcastMessage(rideId, message) {
   const clients = rideConnections.get(rideId);
   if (!clients) return;
@@ -63,9 +63,13 @@ const setupWebSocket = (server) => {
         console.log('Terminating unresponsive connection');
         return ws.terminate();
       }
-      ws.isAlive = false;
+      
       try {
-        ws.ping();
+        ws.isAlive = false;
+        console.log(`Sending ping to user ${ws.userId || 'unknown'}`);
+        ws.ping(null, false, (err) => {
+          if (err) console.error('Ping error:', err);
+        });
       } catch (error) {
         console.error('Ping error:', error);
       }
@@ -88,6 +92,7 @@ const setupWebSocket = (server) => {
     resetHeartbeat();
 
     try {
+      // Origin validation
       if (process.env.NODE_ENV === 'production') {
         const origin = req.headers.origin;
         const allowedOrigins = process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim());
@@ -95,13 +100,7 @@ const setupWebSocket = (server) => {
         if (!origin || !allowedOrigins.includes(origin)) {
           throw new Error('Invalid origin');
         }
-      } else {
-        // ✅ Development: allow all localhost origins
-        const origin = req.headers.origin;
-        if (!origin || !origin.startsWith('http://localhost')) {
-          throw new Error('Invalid origin');
-        }
-      }      
+      }
 
       // Parse token and rideId from URL
       const url = new URL(req.url, `ws://${req.headers.host}`);
@@ -115,6 +114,7 @@ const setupWebSocket = (server) => {
       // Verify JWT token
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
       userId = decoded.id;
+      ws.userId = userId; // Store for logging
 
       // Verify user exists
       const userCheck = await query('SELECT id, email FROM users WHERE id = $1', [userId]);
@@ -142,6 +142,12 @@ const setupWebSocket = (server) => {
       }
       userConnections.get(userId).add(ws);
 
+      // Send connection established message
+      ws.send(JSON.stringify({
+        type: 'connection_established',
+        timestamp: new Date().toISOString()
+      }));
+
       // Send message history in batches
       const messageHistory = await query(
         `SELECT m.*, u.email 
@@ -152,7 +158,6 @@ const setupWebSocket = (server) => {
         [rideId]
       );
 
-      // Split history into batches
       const batches = [];
       for (let i = 0; i < messageHistory.rows.length; i += MESSAGE_HISTORY_BATCH_SIZE) {
         batches.push(messageHistory.rows.slice(i, i + MESSAGE_HISTORY_BATCH_SIZE));
@@ -175,7 +180,11 @@ const setupWebSocket = (server) => {
           
           // Handle ping/pong
           if (data.type === 'ping') {
-            return ws.pong();
+            console.log(`Received ping from user ${userId}`);
+            return ws.send(JSON.stringify({
+              type: 'pong',
+              timestamp: new Date().toISOString()
+            }));
           }
           
           // Handle new messages
@@ -200,22 +209,20 @@ const setupWebSocket = (server) => {
             // Sanitize message content
             const sanitizedContent = data.content.replace(/</g, '&lt;').replace(/>/g, '&gt;');
             
-            // Insert message if not from HTTP
-            if (!data.fromHttp) {
-              const result = await query(
-                'INSERT INTO messages (ride_id, user_id, content) VALUES ($1, $2, $3) RETURNING *',
-                [rideId, userId, sanitizedContent]
-              );
-              
-              await broadcastMessage(rideId, {
-                type: 'message',
-                id: result.rows[0].id,
-                userId,
-                userEmail: userCheck.rows[0].email,
-                content: sanitizedContent,
-                timestamp: result.rows[0].created_at.toISOString()
-              });
-            }
+            // Insert message
+            const result = await query(
+              'INSERT INTO messages (ride_id, user_id, content) VALUES ($1, $2, $3) RETURNING *',
+              [rideId, userId, sanitizedContent]
+            );
+            
+            await broadcastMessage(rideId, {
+              type: 'message',
+              id: result.rows[0].id,
+              userId,
+              userEmail: userCheck.rows[0].email,
+              content: sanitizedContent,
+              timestamp: result.rows[0].created_at.toISOString()
+            });
           }
         } catch (error) {
           console.error('WebSocket message error:', error);
@@ -227,12 +234,14 @@ const setupWebSocket = (server) => {
       });
 
       ws.on('pong', () => {
+        console.log(`Received pong from user ${userId}`);
         ws.isAlive = true;
         resetHeartbeat();
       });
 
       // Cleanup on close
       ws.on('close', () => {
+        console.log(`Connection closed for user ${userId}`);
         clearTimeout(heartbeatTimeout);
         
         // Remove from ride connections

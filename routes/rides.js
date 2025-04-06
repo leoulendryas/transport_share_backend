@@ -217,7 +217,7 @@ router.get('/user/active-rides', authenticate, paginate, async (req, res) => {
 
     const queryText = `
       SELECT DISTINCT
-        r.*,  -- Keep everything from the rides table
+        r.*,
         u.email as driver_email,
         (SELECT COUNT(*) FROM user_rides WHERE ride_id = r.id) as participants,
         ST_X(r.from_location::geometry) as from_lng,
@@ -238,12 +238,6 @@ router.get('/user/active-rides', authenticate, paginate, async (req, res) => {
 
     const result = await client.query(queryText, [userId, req.query.limit, offset]);
 
-    // Remove 'is_driver' from each row in the result set
-    const filteredResults = result.rows.map(ride => {
-      const { is_driver, ...rest } = ride; // Destructure and omit is_driver
-      return rest; // Return the rest of the object without 'is_driver'
-    });
-
     const countResult = await client.query(
       `SELECT COUNT(DISTINCT r.id) as total 
        FROM rides r
@@ -255,7 +249,7 @@ router.get('/user/active-rides', authenticate, paginate, async (req, res) => {
     );
 
     const response = {
-      results: filteredResults,
+      results: result.rows,
       pagination: {
         page: req.query.page,
         limit: req.query.limit,

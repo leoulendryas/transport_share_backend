@@ -2,8 +2,75 @@ const express = require('express');
 const { pool, query } = require('../config/database');
 const { rideConnections } = require('../config/websocket');
 const { authenticate, validateCoordinates, paginate, cache } = require('../middlewares');
+const cron = require('node-cron');
 
 const router = express.Router();
+
+async function cancelRide(rideId) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    
+    const rideCheck = await client.query(
+      `SELECT id FROM rides WHERE id = $1 AND status = 'active' FOR UPDATE`,
+      [rideId]
+    );
+    
+    if (rideCheck.rowCount === 0) throw new Error('Ride not found or not active');
+    
+    await client.query(
+      `UPDATE rides SET status = 'cancelled' WHERE id = $1`,
+      [rideId]
+    );
+    
+    await client.query('COMMIT');
+    
+    // Notify WebSocket clients
+    const clients = rideConnections.get(rideId);
+    if (clients) {
+      clients.forEach(wsClient => {
+        if (wsClient.readyState === WebSocket.OPEN) {
+          wsClient.send(JSON.stringify({
+            type: 'ride_cancelled',
+            ride_id: rideId,
+            timestamp: new Date().toISOString()
+          }));
+        }
+      });
+    }
+    
+    return true;
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error(`Failed to cancel ride ${rideId}:`, error);
+    return false;
+  } finally {
+    client.release();
+  }
+}
+
+cron.schedule('0 * * * *', async () => {
+  const client = await pool.connect();
+  try {
+    console.log('Checking for rides to cancel automatically...');
+    
+    const { rows } = await client.query(
+      `SELECT id FROM rides 
+       WHERE status = 'active' 
+       AND created_at < NOW() - INTERVAL '24 HOURS'`
+    );
+    
+    console.log(`Found ${rows.length} rides to cancel.`);
+    
+    for (const ride of rows) {
+      await cancelRide(ride.id);
+    }
+  } catch (error) {
+    console.error('Error during automatic ride cancellation:', error);
+  } finally {
+    client.release();
+  }
+});
 
 router.post('/', authenticate, validateCoordinates, async (req, res) => {
   const client = await pool.connect();
@@ -27,9 +94,9 @@ router.post('/', authenticate, validateCoordinates, async (req, res) => {
     const rideResult = await client.query(
       `INSERT INTO rides 
        (driver_id, from_location, from_address, to_location, to_address, 
-        total_seats, seats_available, departure_time)
+        total_seats, seats_available, departure_time, created_at)
        VALUES ($1, ST_SetSRID(ST_MakePoint($2, $3), 4326), $4, 
-              ST_SetSRID(ST_MakePoint($5, $6), 4326), $7, $8, $9, $10)
+              ST_SetSRID(ST_MakePoint($5, $6), 4326), $7, $8, $9, $10, NOW())
        RETURNING *`,
       [
         req.user.id,
@@ -444,7 +511,7 @@ router.post('/:id/cancel', authenticate, async (req, res) => {
     );
     
     if (rideCheck.rows.length === 0) {
-      throw new Error('Only the driver can cancel this ride');
+      return res.status(403).json({ error: 'Only the driver can cancel this ride' });
     }
     
     await client.query(
@@ -473,6 +540,9 @@ router.post('/:id/cancel', authenticate, async (req, res) => {
         }
       });
     }
+
+    const success = await cancelRide(rideId);
+    if (!success) throw new Error('Failed to cancel ride');
     
     res.json({ message: 'Ride cancelled successfully' });
   } catch (error) {

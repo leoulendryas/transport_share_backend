@@ -18,11 +18,18 @@ async function cancelRide(rideId) {
     
     if (rideCheck.rowCount === 0) throw new Error('Ride not found or not active');
     
+    // Cancel the ride
     await client.query(
       `UPDATE rides SET status = 'cancelled' WHERE id = $1`,
       [rideId]
     );
-    
+
+    // Delete all associated messages
+    await client.query(
+      `DELETE FROM messages WHERE ride_id = $1`,
+      [rideId]
+    );
+
     await client.query('COMMIT');
     
     // Notify WebSocket clients
@@ -32,6 +39,12 @@ async function cancelRide(rideId) {
         if (wsClient.readyState === WebSocket.OPEN) {
           wsClient.send(JSON.stringify({
             type: 'ride_cancelled',
+            ride_id: rideId,
+            timestamp: new Date().toISOString()
+          }));
+          // Notify about message clearance
+          wsClient.send(JSON.stringify({
+            type: 'messages_cleared',
             ride_id: rideId,
             timestamp: new Date().toISOString()
           }));

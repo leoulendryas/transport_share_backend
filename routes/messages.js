@@ -23,6 +23,30 @@ router.get('/rides/:id/messages', authenticate, async (req, res) => {
     const limit = parseInt(req.query.limit) || 50;
     const offset = (page - 1) * limit;
 
+    const rideCheck = await query(
+      'SELECT status FROM rides WHERE id = $1',
+      [rideId]
+    );
+    
+    if (rideCheck.rows.length === 0) {
+      return res.status(404).json({ 
+        error: 'Ride not found',
+        details: 'The specified ride does not exist'
+      });
+    }
+
+    if (rideCheck.rows[0].status === 'cancelled') {
+      return res.json({
+        messages: [],
+        pagination: {
+          page: 1,
+          limit: 50,
+          total: 0,
+          totalPages: 0
+        }
+      });
+    }
+
     if (isNaN(rideId)) {
       return res.status(400).json({ 
         error: 'Invalid rideId',
@@ -84,6 +108,25 @@ router.post('/rides/:id/messages', authenticate, messageLimiter, async (req, res
     const { content } = req.body;
     const rideId = parseInt(req.params.id);
     const userId = req.user.id;
+
+    const rideCheck = await query(
+      'SELECT status FROM rides WHERE id = $1',
+      [rideId]
+    );
+    
+    if (rideCheck.rows.length === 0) {
+      return res.status(404).json({ 
+        error: 'Ride not found',
+        details: 'The specified ride does not exist'
+      });
+    }
+    
+    if (rideCheck.rows[0].status === 'cancelled') {
+      return res.status(400).json({ 
+        error: 'Ride canceled',
+        details: 'Cannot send messages in a canceled ride'
+      });
+    }
 
     if (isNaN(rideId)) {
       return res.status(400).json({ 

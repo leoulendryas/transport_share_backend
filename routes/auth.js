@@ -124,6 +124,27 @@ router.post('/verify-phone', async (req, res) => {
   }
 });
 
+// Add this email verification endpoint
+router.get('/verify-email', async (req, res) => {
+  try {
+    const { token } = req.query;
+    const user = await query(
+      'UPDATE users SET email_verified = true, verification_token = NULL ' +
+      'WHERE verification_token = $1 RETURNING id, email',
+      [token]
+    );
+
+    if (!user.rows[0]) {
+      return res.status(400).json({ error: 'Invalid or expired verification token' });
+    }
+
+    res.json({ message: 'Email verified successfully! You can now login.' });
+  } catch (error) {
+    console.error('Verify Email Error:', error);
+    res.status(500).json({ error: 'Verification failed' });
+  }
+});
+
 // Email/phone + password login
 router.post('/login', apiLimiter, async (req, res) => {
   try {

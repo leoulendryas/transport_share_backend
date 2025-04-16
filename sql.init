@@ -1,0 +1,418 @@
+--
+-- PostgreSQL database dump
+--
+
+-- Dumped from database version 16.8 (Ubuntu 16.8-0ubuntu0.24.04.1)
+-- Dumped by pg_dump version 16.8 (Ubuntu 16.8-0ubuntu0.24.04.1)
+
+SET statement_timeout = 0;
+SET lock_timeout = 0;
+SET idle_in_transaction_session_timeout = 0;
+SET client_encoding = 'UTF8';
+SET standard_conforming_strings = on;
+SELECT pg_catalog.set_config('search_path', '', false);
+SET check_function_bodies = false;
+SET xmloption = content;
+SET client_min_messages = warning;
+SET row_security = off;
+
+--
+-- Name: postgis; Type: EXTENSION; Schema: -; Owner: -
+--
+
+CREATE EXTENSION IF NOT EXISTS postgis WITH SCHEMA public;
+
+
+SET default_tablespace = '';
+
+SET default_table_access_method = heap;
+
+--
+-- Name: messages; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.messages (
+    id integer NOT NULL,
+    ride_id integer,
+    user_id integer,
+    content text NOT NULL,
+    created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP
+);
+
+
+--
+-- Name: messages_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.messages_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: messages_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.messages_id_seq OWNED BY public.messages.id;
+
+
+--
+-- Name: ride_companies; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.ride_companies (
+    id integer NOT NULL,
+    name character varying(255) NOT NULL,
+    created_at timestamp with time zone DEFAULT now()
+);
+
+
+--
+-- Name: ride_companies_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.ride_companies_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: ride_companies_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.ride_companies_id_seq OWNED BY public.ride_companies.id;
+
+
+--
+-- Name: ride_company_mapping; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.ride_company_mapping (
+    ride_id integer NOT NULL,
+    company_id integer NOT NULL
+);
+
+
+--
+-- Name: rides; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.rides (
+    id integer NOT NULL,
+    driver_id integer,
+    from_location public.geography(Point,4326),
+    from_address text NOT NULL,
+    to_location public.geography(Point,4326),
+    to_address text NOT NULL,
+    total_seats integer NOT NULL,
+    seats_available integer NOT NULL,
+    departure_time timestamp without time zone,
+    status text DEFAULT 'active'::text,
+    created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP
+);
+
+
+--
+-- Name: rides_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.rides_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: rides_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.rides_id_seq OWNED BY public.rides.id;
+
+
+--
+-- Name: sos_alerts; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.sos_alerts (
+    id integer NOT NULL,
+    user_id integer,
+    ride_id integer,
+    location text NOT NULL,
+    created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP
+);
+
+
+--
+-- Name: sos_alerts_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.sos_alerts_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: sos_alerts_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.sos_alerts_id_seq OWNED BY public.sos_alerts.id;
+
+
+--
+-- Name: user_rides; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.user_rides (
+    user_id integer NOT NULL,
+    ride_id integer NOT NULL,
+    is_driver boolean DEFAULT false
+);
+
+
+--
+-- Name: users; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.users (
+    id integer NOT NULL,
+    email character varying(255),
+    password_hash character varying(255) NOT NULL,
+    created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
+    email_verified boolean DEFAULT false NOT NULL,
+    verification_token text,
+    first_name text NOT NULL,
+    last_name text NOT NULL,
+    phone_number text,
+    phone_verified boolean DEFAULT false NOT NULL,
+    otp_hash text,
+    otp_expiry timestamp without time zone,
+    CONSTRAINT email_or_phone CHECK (((email IS NOT NULL) OR (phone_number IS NOT NULL)))
+);
+
+
+--
+-- Name: users_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.users_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: users_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.users_id_seq OWNED BY public.users.id;
+
+
+--
+-- Name: messages id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.messages ALTER COLUMN id SET DEFAULT nextval('public.messages_id_seq'::regclass);
+
+
+--
+-- Name: ride_companies id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.ride_companies ALTER COLUMN id SET DEFAULT nextval('public.ride_companies_id_seq'::regclass);
+
+
+--
+-- Name: rides id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.rides ALTER COLUMN id SET DEFAULT nextval('public.rides_id_seq'::regclass);
+
+
+--
+-- Name: sos_alerts id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sos_alerts ALTER COLUMN id SET DEFAULT nextval('public.sos_alerts_id_seq'::regclass);
+
+
+--
+-- Name: users id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.users ALTER COLUMN id SET DEFAULT nextval('public.users_id_seq'::regclass);
+
+
+--
+-- Name: messages messages_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.messages
+    ADD CONSTRAINT messages_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: ride_companies ride_companies_name_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.ride_companies
+    ADD CONSTRAINT ride_companies_name_key UNIQUE (name);
+
+
+--
+-- Name: ride_companies ride_companies_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.ride_companies
+    ADD CONSTRAINT ride_companies_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: ride_company_mapping ride_company_mapping_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.ride_company_mapping
+    ADD CONSTRAINT ride_company_mapping_pkey PRIMARY KEY (ride_id, company_id);
+
+
+--
+-- Name: rides rides_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.rides
+    ADD CONSTRAINT rides_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: sos_alerts sos_alerts_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sos_alerts
+    ADD CONSTRAINT sos_alerts_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: user_rides user_rides_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.user_rides
+    ADD CONSTRAINT user_rides_pkey PRIMARY KEY (user_id, ride_id);
+
+
+--
+-- Name: users users_email_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.users
+    ADD CONSTRAINT users_email_key UNIQUE (email);
+
+
+--
+-- Name: users users_phone_number_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.users
+    ADD CONSTRAINT users_phone_number_key UNIQUE (phone_number);
+
+
+--
+-- Name: users users_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.users
+    ADD CONSTRAINT users_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: ride_company_mapping fk_mapping_company; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.ride_company_mapping
+    ADD CONSTRAINT fk_mapping_company FOREIGN KEY (company_id) REFERENCES public.ride_companies(id) ON DELETE CASCADE;
+
+
+--
+-- Name: ride_company_mapping fk_mapping_ride; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.ride_company_mapping
+    ADD CONSTRAINT fk_mapping_ride FOREIGN KEY (ride_id) REFERENCES public.rides(id) ON DELETE CASCADE;
+
+
+--
+-- Name: messages fk_messages_ride; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.messages
+    ADD CONSTRAINT fk_messages_ride FOREIGN KEY (ride_id) REFERENCES public.rides(id) ON DELETE CASCADE;
+
+
+--
+-- Name: messages fk_messages_user; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.messages
+    ADD CONSTRAINT fk_messages_user FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+
+--
+-- Name: rides fk_rides_driver; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.rides
+    ADD CONSTRAINT fk_rides_driver FOREIGN KEY (driver_id) REFERENCES public.users(id);
+
+
+--
+-- Name: sos_alerts fk_sos_ride; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sos_alerts
+    ADD CONSTRAINT fk_sos_ride FOREIGN KEY (ride_id) REFERENCES public.rides(id) ON DELETE CASCADE;
+
+
+--
+-- Name: sos_alerts fk_sos_user; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sos_alerts
+    ADD CONSTRAINT fk_sos_user FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+
+--
+-- Name: user_rides fk_user_rides_ride; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.user_rides
+    ADD CONSTRAINT fk_user_rides_ride FOREIGN KEY (ride_id) REFERENCES public.rides(id) ON DELETE CASCADE;
+
+
+--
+-- Name: user_rides fk_user_rides_user; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.user_rides
+    ADD CONSTRAINT fk_user_rides_user FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+
+--
+-- PostgreSQL database dump complete
+--
+

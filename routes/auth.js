@@ -220,4 +220,34 @@ router.post('/login-otp', apiLimiter, async (req, res) => {
   }
 });
 
+// Resend verification email
+router.post('/resend-verification', async (req, res) => {
+  try {
+    const { email } = req.body;
+    const user = await query('SELECT * FROM users WHERE email = $1', [email]);
+    
+    if (!user.rows[0]) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const verificationToken = crypto.randomBytes(32).toString('hex');
+    await query(
+      'UPDATE users SET verification_token = $1 WHERE email = $2',
+      [verificationToken, email]
+    );
+
+    const verificationLink = `${process.env.BASE_URL}/auth/verify-email?token=${verificationToken}`;
+    await transporter.sendMail({
+      to: email,
+      subject: 'Verify Your Email',
+      html: `Click <a href="${verificationLink}">here</a> to verify your email`
+    });
+
+    res.json({ message: 'Verification email resent successfully' });
+  } catch (error) {
+    console.error('Resend Error:', error);
+    res.status(500).json({ error: 'Failed to resend verification' });
+  }
+});
+
 module.exports = router;

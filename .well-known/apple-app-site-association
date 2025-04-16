@@ -1,0 +1,11 @@
+{
+    "applinks": {
+        "apps": [],
+        "details": [
+            {
+                "appID": "ABCDE12345.com.yourcompany.transportshare",
+                "paths": ["/auth/verify-email*"]
+            }
+        ]
+    }
+}

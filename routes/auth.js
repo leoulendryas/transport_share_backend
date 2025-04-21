@@ -81,10 +81,39 @@ router.post('/register', createAccountLimiter, async (req, res) => {
       const verificationLink = `${process.env.BASE_URL}/auth/verify-email?token=${verificationToken}`;
       await transporter.sendMail({
         to: email,
-        subject: 'Verify Your Email',
-        html: `Click <a href="${verificationLink}">here</a> to verify your email`
+        subject: 'Verify Your Email Address',
+        html: `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 40px; background-color: #f7f9f9; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.05);">
+            <div style="text-align: center; margin-bottom: 24px;">
+              <h2 style="color: #004F2D; margin: 0;">Transport Share</h2>
+              <p style="color: #7F6A93; font-size: 16px;">Secure Your Account</p>
+            </div>
+            
+            <p style="font-size: 16px; color: #333; margin-bottom: 24px;">
+              Hi there,<br /><br />
+              Thank you for signing up! To complete your registration and start using Transport Share, please verify your email address by clicking the button below:
+            </p>
+    
+            <div style="text-align: center; margin: 30px 0;">
+              <a href="${verificationLink}" style="background-color: #004F2D; color: #ffffff; text-decoration: none; padding: 14px 28px; border-radius: 6px; font-weight: bold; display: inline-block;">
+                Verify My Email
+              </a>
+            </div>
+    
+            <p style="font-size: 14px; color: #555;">
+              Or copy and paste this URL into your browser:<br />
+              <a href="${verificationLink}" style="color: #004F2D;">${verificationLink}</a>
+            </p>
+    
+            <hr style="margin: 40px 0; border: none; border-top: 1px solid #eee;" />
+    
+            <p style="font-size: 12px; color: #888888;">
+              If you didn’t create an account, no further action is required.
+            </p>
+          </div>
+        `,
       });
-    }
+    }    
 
     res.status(201).json({
       message: 'Registration successful. Check your email/phone for verification.',

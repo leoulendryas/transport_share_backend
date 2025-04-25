@@ -6,7 +6,7 @@ const bcrypt = require('bcrypt');
 const router = express.Router();
 
 // GET user profile with more fields
-router.get('/profile', authenticate, async (req, res) => {
+router.get('/', authenticate, async (req, res) => {
   try {
     const user = await query(
       `SELECT id, email, first_name, last_name, phone_number, created_at, email_verified, phone_verified
@@ -27,7 +27,7 @@ router.get('/profile', authenticate, async (req, res) => {
 });
 
 // PUT to update user profile
-router.put('/profile', authenticate, async (req, res) => {
+router.put('/', authenticate, async (req, res) => {
   try {
     const { email, password, first_name, last_name, phone_number } = req.body;
     const updates = [];

@@ -97,6 +97,11 @@ router.post('/register', createAccountLimiter, async (req, res) => {
 router.get('/verify-email', async (req, res) => {
   try {
     const { token } = req.query;
+    if (!token) {
+      return res.status(400).json({ error: 'Token is required' });
+    }
+
+    // Verify the token and update the user's email verification status
     const user = await query(
       `UPDATE users SET email_verified = true, verification_token = NULL 
        WHERE verification_token = $1 RETURNING *`,
@@ -104,22 +109,26 @@ router.get('/verify-email', async (req, res) => {
     );
 
     if (!user.rows[0]) {
-      return res.status(400).json({ error: 'Invalid verification token' });
+      return res.status(400).json({ error: 'Invalid or expired verification token' });
     }
 
+    // Generate access and refresh tokens
     const { accessToken, refreshToken } = generateTokens(user.rows[0].id);
+
+    // Save the refresh token in the database
     await query('UPDATE users SET refresh_token = $1 WHERE id = $2', [refreshToken, user.rows[0].id]);
 
+    // Send the response with the tokens
     res.json({
       access_token: accessToken,
       refresh_token: refreshToken,
-      expires_in: 3600,
-      user: user.rows[0]
+      expires_in: 3600, // Token expiry time in seconds
+      user: user.rows[0],
     });
 
   } catch (error) {
     console.error('Email Verification Error:', error);
-    res.status(500).json({ error: 'Verification failed' });
+    res.status(500).json({ error: 'Email verification failed due to a server error' });
   }
 });
 

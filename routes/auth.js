@@ -15,7 +15,7 @@ const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TO
 // Token generation helper
 const generateTokens = (userId) => ({
   accessToken: jwt.sign({ id: userId }, process.env.JWT_SECRET, { expiresIn: '1h' }),
-  refreshToken: jwt.sign({ id: userId }, process.env.JWT_REFRESH_SECRET, { expiresIn: '7d' })
+  refreshToken: jwt.sign({ id: userId }, process.env.JWT_REFRESH_SECRET) // Refresh token with no expiry
 });
 
 // Registration endpoint
@@ -224,11 +224,19 @@ router.post('/login-otp', apiLimiter, async (req, res) => {
 });
 
 // Refresh token endpoint
+// Refresh token endpoint
 router.post('/refresh', async (req, res) => {
   try {
     const { refresh_token } = req.body;
+
+    if (!refresh_token) {
+      return res.status(400).json({ error: 'Refresh token is required' });
+    }
+
+    // Verify the refresh token
     const decoded = jwt.verify(refresh_token, process.env.JWT_REFRESH_SECRET);
-    
+
+    // Find the user using the ID from the decoded token
     const user = await query(
       'SELECT * FROM users WHERE id = $1 AND refresh_token = $2',
       [decoded.id, refresh_token]
@@ -238,13 +246,17 @@ router.post('/refresh', async (req, res) => {
       return res.status(401).json({ error: 'Invalid refresh token' });
     }
 
+    // Generate new access and refresh tokens
     const { accessToken, refreshToken } = generateTokens(user.rows[0].id);
+
+    // Update the refresh token in the database
     await query('UPDATE users SET refresh_token = $1 WHERE id = $2', [refreshToken, user.rows[0].id]);
 
+    // Respond with the new tokens
     res.json({
       access_token: accessToken,
       refresh_token: refreshToken,
-      expires_in: 3600
+      expires_in: 3600  // Access token expires in 1 hour
     });
 
   } catch (error) {
@@ -257,14 +269,29 @@ router.post('/refresh', async (req, res) => {
 router.post('/logout', async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
-    const token = authHeader?.split(' ')[1];
-    
-    if (token) {
-      const decoded = jwt.verify(token, process.env.JWT_SECRET);
-      await query('UPDATE users SET refresh_token = NULL WHERE id = $1', [decoded.id]);
+    if (!authHeader) {
+      return res.status(400).json({ error: 'Authorization header required' });
     }
 
+    // Extract token from the Authorization header (Bearer token)
+    const token = authHeader.split(' ')[1];
+
+    if (!token) {
+      return res.status(400).json({ error: 'Access token is required' });
+    }
+
+    // Verify the access token
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+
+    // Remove refresh token from the database for this user
+    await query('UPDATE users SET refresh_token = NULL WHERE id = $1', [decoded.id]);
+
+    // Optionally, if you're using cookies, clear the refresh token cookie here as well:
+    res.clearCookie('refreshToken', { httpOnly: true, secure: true, sameSite: 'Strict' });
+
+    // Send a response indicating successful logout
     res.sendStatus(204);
+
   } catch (error) {
     console.error('Logout Error:', error);
     res.status(500).json({ error: 'Logout failed' });

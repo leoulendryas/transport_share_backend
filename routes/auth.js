@@ -128,10 +128,27 @@ router.post('/register', [
       await transporter.sendMail({
         to: email,
         subject: 'Verify Your Email Address',
-        html: `Click <a href="${verificationLink}">here</a> to verify your email`
+        html: `
+          <div style="background-color: #F7F9F9; padding: 40px; font-family: Arial, sans-serif; color: #004F2D; text-align: center;">
+            <div style="max-width: 600px; margin: auto; border: 2px solid #004F2D; border-radius: 12px; padding: 30px;">
+              <h1 style="color: #004F2D;">Welcome to Transport Sharing!</h1>
+              <p style="font-size: 16px; margin-bottom: 30px;">
+                You're almost there! Please verify your email to activate your account.
+              </p>
+              <a href="${verificationLink}" 
+                 style="display: inline-block; background-color: #004F2D; color: #F7F9F9; padding: 15px 30px; 
+                        border-radius: 8px; text-decoration: none; font-size: 16px; font-weight: bold;">
+                Verify Email
+              </a>
+              <p style="margin-top: 30px; font-size: 14px; color: #555;">
+                If you did not sign up, please ignore this message.
+              </p>
+            </div>
+          </div>
+        `
       });
     }
-
+    
     await client.query('COMMIT');
     res.status(201).json({ message: 'Registration successful. Check your email/phone for verification.' });
   } catch (error) {

@@ -485,7 +485,6 @@ router.post('/admin/verify-id',
 // Protected Ride Posting
 router.post('/rides',
   authenticateUser,
-  requireIdVerification,
   [
     body('destination').notEmpty(),
     body('departure_time').isISO8601()

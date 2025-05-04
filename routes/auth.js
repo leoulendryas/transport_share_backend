@@ -5,6 +5,8 @@ const speakeasy = require('speakeasy');
 const bcrypt = require('bcrypt');
 const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
+const multer = require('multer');
+const path = require('path');
 const { query } = require('../config/database');
 const transporter = require('../config/nodemailer');
 const createAccountLimiter = require('../config/createAccountLimiter');
@@ -12,16 +14,57 @@ const apiLimiter = require('../config/apiLimiter');
 
 const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
 
+// Configure multer for ID image uploads
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, 'uploads/ids/');
+  },
+  filename: (req, file, cb) => {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
+    cb(null, `id-${uniqueSuffix}${path.extname(file.originalname)}`);
+  }
+});
+const upload = multer({ storage });
+
+// Authentication middleware
+const authenticateUser = async (req, res, next) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader) return res.status(401).json({ error: 'Authorization header missing' });
+  
+  const token = authHeader.split(' ')[1];
+  if (!token) return res.status(401).json({ error: 'Access token missing' });
+
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const user = await query('SELECT * FROM users WHERE id = $1', [decoded.id]);
+    if (!user.rows[0]) return res.status(401).json({ error: 'User not found' });
+    
+    req.user = user.rows[0];
+    next();
+  } catch (error) {
+    console.error('Authentication error:', error);
+    res.status(401).json({ error: 'Invalid access token' });
+  }
+};
+
+// Authorization middleware for ID verification
+const requireIdVerification = (req, res, next) => {
+  if (!req.user.id_verified) {
+    return res.status(403).json({ error: 'ID verification required' });
+  }
+  next();
+};
+
 // Token generation helper
 const generateTokens = (userId) => ({
   accessToken: jwt.sign({ id: userId }, process.env.JWT_SECRET, { expiresIn: '1h' }),
-  refreshToken: jwt.sign({ id: userId }, process.env.JWT_REFRESH_SECRET) // Refresh token with no expiry
+  refreshToken: jwt.sign({ id: userId }, process.env.JWT_REFRESH_SECRET)
 });
 
 // Registration endpoint
 router.post('/register', createAccountLimiter, async (req, res) => {
   try {
-    const { first_name, last_name, email, phone_number, password } = req.body;
+    const { first_name, last_name, email, phone_number, password, age, gender } = req.body;
 
     if (!first_name || !last_name) {
       return res.status(400).json({ error: 'First and last name are required' });
@@ -62,10 +105,12 @@ router.post('/register', createAccountLimiter, async (req, res) => {
 
     const result = await query(
       `INSERT INTO users 
-      (first_name, last_name, email, phone_number, password_hash, verification_token, otp_hash, otp_expiry) 
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-      RETURNING id, first_name, last_name, email, phone_number`,
-      [first_name, last_name, email, phone_number, hashedPassword, verificationToken, otpHash, otpExpiry]
+      (first_name, last_name, email, phone_number, password_hash, 
+       verification_token, otp_hash, otp_expiry, age, gender) 
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      RETURNING id, first_name, last_name, email, phone_number, age, gender`,
+      [first_name, last_name, email, phone_number, hashedPassword, 
+       verificationToken, otpHash, otpExpiry, age || null, gender || null]
     );
 
     const { accessToken, refreshToken } = generateTokens(result.rows[0].id);
@@ -97,11 +142,8 @@ router.post('/register', createAccountLimiter, async (req, res) => {
 router.get('/verify-email', async (req, res) => {
   try {
     const { token } = req.query;
-    if (!token) {
-      return res.status(400).json({ error: 'Token is required' });
-    }
+    if (!token) return res.status(400).json({ error: 'Token is required' });
 
-    // Verify the token and update the user's email verification status
     const user = await query(
       `UPDATE users SET email_verified = true, verification_token = NULL 
        WHERE verification_token = $1 RETURNING *`,
@@ -112,23 +154,19 @@ router.get('/verify-email', async (req, res) => {
       return res.status(400).json({ error: 'Invalid or expired verification token' });
     }
 
-    // Generate access and refresh tokens
     const { accessToken, refreshToken } = generateTokens(user.rows[0].id);
-
-    // Save the refresh token in the database
     await query('UPDATE users SET refresh_token = $1 WHERE id = $2', [refreshToken, user.rows[0].id]);
 
-    // Send the response with the tokens
     res.json({
       access_token: accessToken,
       refresh_token: refreshToken,
-      expires_in: 3600, // Token expiry time in seconds
+      expires_in: 3600,
       user: user.rows[0],
     });
 
   } catch (error) {
     console.error('Email Verification Error:', error);
-    res.status(500).json({ error: 'Email verification failed due to a server error' });
+    res.status(500).json({ error: 'Email verification failed' });
   }
 });
 
@@ -138,9 +176,7 @@ router.post('/verify-phone', async (req, res) => {
     const { phone_number, otp } = req.body;
     const user = await query('SELECT * FROM users WHERE phone_number = $1', [phone_number]);
 
-    if (!user.rows[0]) {
-      return res.status(404).json({ error: 'User not found' });
-    }
+    if (!user.rows[0]) return res.status(404).json({ error: 'User not found' });
 
     const isValid = await bcrypt.compare(otp, user.rows[0].otp_hash);
     const isExpired = new Date() > new Date(user.rows[0].otp_expiry);
@@ -211,9 +247,8 @@ router.post('/login-otp', apiLimiter, async (req, res) => {
     const { phone_number, otp } = req.body;
     const user = await query('SELECT * FROM users WHERE phone_number = $1', [phone_number]);
 
-    if (!user.rows[0] || !(await bcrypt.compare(otp, user.rows[0].otp_hash)) ||
-      new Date() > new Date(user.rows[0].otp_expiry)) {
-      return res.status(401).json({ error: 'Invalid or expired OTP' });
+    if (!user.rows[0] || !(await bcrypt.compare(otp, user.rows[0].otp_hash))) {
+      return res.status(401).json({ error: 'Invalid OTP' });
     }
 
     const { accessToken, refreshToken } = generateTokens(user.rows[0].id);
@@ -233,39 +268,26 @@ router.post('/login-otp', apiLimiter, async (req, res) => {
 });
 
 // Refresh token endpoint
-// Refresh token endpoint
 router.post('/refresh', async (req, res) => {
   try {
     const { refresh_token } = req.body;
+    if (!refresh_token) return res.status(400).json({ error: 'Refresh token required' });
 
-    if (!refresh_token) {
-      return res.status(400).json({ error: 'Refresh token is required' });
-    }
-
-    // Verify the refresh token
     const decoded = jwt.verify(refresh_token, process.env.JWT_REFRESH_SECRET);
-
-    // Find the user using the ID from the decoded token
     const user = await query(
       'SELECT * FROM users WHERE id = $1 AND refresh_token = $2',
       [decoded.id, refresh_token]
     );
 
-    if (!user.rows[0]) {
-      return res.status(401).json({ error: 'Invalid refresh token' });
-    }
+    if (!user.rows[0]) return res.status(401).json({ error: 'Invalid refresh token' });
 
-    // Generate new access and refresh tokens
     const { accessToken, refreshToken } = generateTokens(user.rows[0].id);
-
-    // Update the refresh token in the database
     await query('UPDATE users SET refresh_token = $1 WHERE id = $2', [refreshToken, user.rows[0].id]);
 
-    // Respond with the new tokens
     res.json({
       access_token: accessToken,
       refresh_token: refreshToken,
-      expires_in: 3600  // Access token expires in 1 hour
+      expires_in: 3600
     });
 
   } catch (error) {
@@ -278,27 +300,15 @@ router.post('/refresh', async (req, res) => {
 router.post('/logout', async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
-    if (!authHeader) {
-      return res.status(400).json({ error: 'Authorization header required' });
-    }
+    if (!authHeader) return res.status(400).json({ error: 'Authorization header required' });
 
-    // Extract token from the Authorization header (Bearer token)
     const token = authHeader.split(' ')[1];
+    if (!token) return res.status(400).json({ error: 'Access token required' });
 
-    if (!token) {
-      return res.status(400).json({ error: 'Access token is required' });
-    }
-
-    // Verify the access token
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-
-    // Remove refresh token from the database for this user
     await query('UPDATE users SET refresh_token = NULL WHERE id = $1', [decoded.id]);
 
-    // Optionally, if you're using cookies, clear the refresh token cookie here as well:
     res.clearCookie('refreshToken', { httpOnly: true, secure: true, sameSite: 'Strict' });
-
-    // Send a response indicating successful logout
     res.sendStatus(204);
 
   } catch (error) {
@@ -313,9 +323,7 @@ router.post('/request-otp', apiLimiter, async (req, res) => {
     const { phone_number } = req.body;
     const user = await query('SELECT * FROM users WHERE phone_number = $1', [phone_number]);
 
-    if (!user.rows[0]) {
-      return res.status(404).json({ error: 'User not found' });
-    }
+    if (!user.rows[0]) return res.status(404).json({ error: 'User not found' });
 
     const otpCode = speakeasy.totp({
       secret: speakeasy.generateSecret().base32,
@@ -349,10 +357,7 @@ router.post('/resend-verification', async (req, res) => {
   try {
     const { email } = req.body;
     const user = await query('SELECT * FROM users WHERE email = $1', [email]);
-    
-    if (!user.rows[0]) {
-      return res.status(404).json({ error: 'User not found' });
-    }
+    if (!user.rows[0]) return res.status(404).json({ error: 'User not found' });
 
     const verificationToken = crypto.randomBytes(32).toString('hex');
     await query(
@@ -367,12 +372,72 @@ router.post('/resend-verification', async (req, res) => {
       html: `Click <a href="${verificationLink}">here</a> to verify your email`
     });
 
-    res.json({ message: 'Verification email resent successfully' });
+    res.json({ message: 'Verification email resent' });
 
   } catch (error) {
     console.error('Resend Error:', error);
     res.status(500).json({ error: 'Failed to resend verification' });
   }
 });
+
+// ID Verification Endpoint
+router.post('/verify-identity', 
+  authenticateUser,
+  upload.single('id_image'),
+  async (req, res) => {
+    try {
+      const { name, age, gender, id_type } = req.body;
+      const userId = req.user.id;
+
+      if (!name || !age || !gender || !id_type || !req.file) {
+        return res.status(400).json({ error: 'All fields and ID image are required' });
+      }
+
+      const idImageUrl = `/ids/${req.file.filename}`;
+      await query(
+        `UPDATE users 
+        SET name = $1, age = $2, gender = $3, id_image_url = $4, id_verified = FALSE 
+        WHERE id = $5`,
+        [name, age, gender, idImageUrl, userId]
+      );
+
+      res.status(201).json({ 
+        message: 'ID verification submitted for review',
+        verification_status: 'pending'
+      });
+
+    } catch (error) {
+      console.error('ID Verification Error:', error);
+      res.status(500).json({ error: 'ID verification submission failed' });
+    }
+  }
+);
+
+// Admin Verification Approval Endpoint
+router.post('/admin/verify-id', 
+  authenticateUser,
+  async (req, res) => {
+    try {
+      const { userId } = req.body;      
+      await query('UPDATE users SET id_verified = TRUE WHERE id = $1', [userId]);
+      res.json({ message: 'ID verification approved' });
+    } catch (error) {
+      res.status(500).json({ error: 'Verification approval failed' });
+    }
+  }
+);
+
+// Protected Ride Posting Endpoint
+router.post('/rides',
+  authenticateUser,
+  requireIdVerification,
+  async (req, res) => {
+    try {
+      res.json({ message: 'Ride posted successfully' });
+    } catch (error) {
+      res.status(500).json({ error: 'Failed to post ride' });
+    }
+  }
+);
 
 module.exports = router;

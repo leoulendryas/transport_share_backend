@@ -185,8 +185,6 @@ router.post('/register', [
   }
 });
 
-// Email Verification
-router.get('/verify-email', [
 // Email Verification (Fixed Version)
 router.get('/verify-email', [
   query('token') // ✅ Validate query parameter

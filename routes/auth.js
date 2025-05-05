@@ -183,7 +183,17 @@ router.get('/verify-email', [
     .withMessage('Invalid verification token format')
 ], async (req, res) => {
   const errors = validationResult(req);
-  if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
+  if (!errors.isEmpty()) return res.status(400).send(`
+    <html>
+      <body style="background-color: #F7F9F9; text-align: center; padding: 50px; font-family: Arial, sans-serif;">
+        <div style="max-width: 600px; margin: auto; background: white; padding: 40px; border-radius: 15px; box-shadow: 0 0 20px rgba(0,0,0,0.1);">
+          <h1 style="color: #e74c3c;">Verification Failed</h1>
+          <p style="font-size: 18px; color: #555;">${errors.array()[0].msg}</p>
+          <a href="/login" style="display: inline-block; margin-top: 20px; padding: 12px 24px; background-color: #004F2D; color: white; text-decoration: none; border-radius: 8px;">Go to Login</a>
+        </div>
+      </body>
+    </html>
+  `);
 
   try {
     const { token } = req.query;
@@ -194,21 +204,52 @@ router.get('/verify-email', [
     );
 
     if (!user.rows[0]) {
-      return res.status(400).json({ error: 'Invalid or expired verification token' });
+      return res.status(400).send(`
+        <html>
+          <body style="background-color: #F7F9F9; text-align: center; padding: 50px; font-family: Arial, sans-serif;">
+            <div style="max-width: 600px; margin: auto; background: white; padding: 40px; border-radius: 15px; box-shadow: 0 0 20px rgba(0,0,0,0.1);">
+              <h1 style="color: #e74c3c;">Verification Failed</h1>
+              <p style="font-size: 18px; color: #555;">Invalid or expired verification token</p>
+              <a href="/login" style="display: inline-block; margin-top: 20px; padding: 12px 24px; background-color: #004F2D; color: white; text-decoration: none; border-radius: 8px;">Go to Login</a>
+            </div>
+          </body>
+        </html>
+      `);
     }
 
     const { accessToken, refreshToken } = generateTokens(user.rows[0].id);
     await dbQuery('UPDATE users SET refresh_token = $1 WHERE id = $2', [refreshToken, user.rows[0].id]);
 
-    res.json({
-      message: 'Email verified successfully',
-      verified: true,
-      access_token: accessToken,
-      refresh_token: refreshToken,
-      user: user.rows[0]
-    });
+    res.send(`
+      <html>
+        <body style="background-color: #F7F9F9; text-align: center; padding: 50px; font-family: Arial, sans-serif;">
+          <div style="max-width: 600px; margin: auto; background: white; padding: 40px; border-radius: 15px; box-shadow: 0 0 20px rgba(0,0,0,0.1);">
+            <h1 style="color: #004F2D;">🎉 Email Verified Successfully!</h1>
+            <p style="font-size: 18px; color: #555; margin: 20px 0;">
+              Your email address has been successfully verified. You can now log in to your account.
+            </p>
+            <div style="margin-top: 30px;">
+              <a href="/login" style="display: inline-block; padding: 12px 24px; background-color: #004F2D; color: white; text-decoration: none; border-radius: 8px; margin: 10px;">
+                Go to Login
+              </a>
+            </div>
+            <img src="https://cdn-icons-png.flaticon.com/512/148/148767.png" alt="Verified" style="width: 100px; margin-top: 30px;">
+          </div>
+        </body>
+      </html>
+    `);
   } catch (error) {
-    res.status(500).json({ error: 'Email verification failed' });
+    res.status(500).send(`
+      <html>
+        <body style="background-color: #F7F9F9; text-align: center; padding: 50px; font-family: Arial, sans-serif;">
+          <div style="max-width: 600px; margin: auto; background: white; padding: 40px; border-radius: 15px; box-shadow: 0 0 20px rgba(0,0,0,0.1);">
+            <h1 style="color: #e74c3c;">Verification Error</h1>
+            <p style="font-size: 18px; color: #555;">Something went wrong during verification. Please try again.</p>
+            <a href="/login" style="display: inline-block; margin-top: 20px; padding: 12px 24px; background-color: #004F2D; color: white; text-decoration: none; border-radius: 8px;">Go to Login</a>
+          </div>
+        </body>
+      </html>
+    `);
   }
 });
 

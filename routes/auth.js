@@ -77,11 +77,16 @@ const generateTokens = (userId) => ({
 // Registration
 router.post('/register', [
   createAccountLimiter,
-  body('email').isEmail().normalizeEmail(),
-  body('phone_number').isMobilePhone(),
+  body('first_name').notEmpty().trim().escape(),
+  body('last_name').notEmpty().trim().escape(),
   body('password').isLength({ min: 8 }),
-  body('first_name').notEmpty(),
-  body('last_name').notEmpty()
+  body().custom(body => {
+    if (!body.email && !body.phone_number) throw new Error('Either email or phone must be provided');
+    if (body.email && body.phone_number) throw new Error('Cannot provide both email and phone');
+    return true;
+  }),
+  body('email').if(body => body.email).isEmail().normalizeEmail(),
+  body('phone_number').if(body => body.phone_number).isMobilePhone()
 ], async (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
@@ -91,13 +96,18 @@ router.post('/register', [
     await client.query('BEGIN');
     const { first_name, last_name, email, phone_number, password, age, gender } = req.body;
 
+    // Check existing user by provided credential
+    const credential = email || phone_number;
+    const checkField = email ? 'email' : 'phone_number';
     const existingUser = await client.query(
-      'SELECT * FROM users WHERE email = $1 OR phone_number = $2 FOR UPDATE',
-      [email, phone_number]
+      `SELECT * FROM users WHERE ${checkField} = $1 FOR UPDATE`,
+      [credential]
     );
 
     if (existingUser.rows[0]) {
-      return res.status(400).json({ error: 'Email or phone already registered' });
+      return res.status(400).json({ 
+        error: `${checkField.replace('_', ' ')} already registered`
+      });
     }
 
     const hashedPassword = await bcrypt.hash(password, 12);
@@ -111,19 +121,27 @@ router.post('/register', [
        verification_token, otp_secret, age, gender) 
       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
       RETURNING id, first_name, last_name, email, phone_number, age, gender`,
-      [first_name, last_name, email, phone_number, hashedPassword, 
-       verificationToken, otpSecret, age || null, gender || null]
+      [
+        first_name, 
+        last_name, 
+        email || null, 
+        phone_number || null, 
+        hashedPassword,
+        verificationToken,
+        otpSecret,
+        age || null, 
+        gender || null
+      ]
     );
 
+    // Send verification to provided contact method
     if (phone_number) {
       await client.messages.create({
         body: `Your verification code: ${otpCode}`,
         from: process.env.TWILIO_PHONE_NUMBER,
         to: phone_number
       });
-    }
-
-    if (email) {
+    } else if (email) {
       const verificationLink = `${process.env.BASE_URL}/auth/verify-email?token=${verificationToken}`;
       await transporter.sendMail({
         to: email,
@@ -150,11 +168,18 @@ router.post('/register', [
     }
     
     await client.query('COMMIT');
-    res.status(201).json({ message: 'Registration successful. Check your email/phone for verification.' });
+    res.status(201).json({ 
+      message: `Registration successful. Check your ${email ? 'email' : 'phone'} for verification.`,
+      methodUsed: email ? 'email' : 'phone'
+    });    
   } catch (error) {
     await client.query('ROLLBACK');
     console.error('Registration Error:', error);
-    res.status(500).json({ error: 'Registration failed' });
+    res.status(500).json({ 
+      error: error.code === '23514' 
+        ? 'Must provide email or phone' 
+        : 'Registration failed' 
+    });
   } finally {
     client.release();
   }

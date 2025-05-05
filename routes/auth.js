@@ -187,16 +187,22 @@ router.post('/register', [
 
 // Email Verification
 router.get('/verify-email', [
-  body('token').isLength({ min: 64, max: 64 })
+// Email Verification (Fixed Version)
+router.get('/verify-email', [
+  query('token') // ✅ Validate query parameter
+    .isLength({ min: 64, max: 64 })
+    .withMessage('Invalid verification token format')
 ], async (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
 
   try {
-    const { token } = req.query;
+    const { token } = req.query; // ✅ Get from query params
+    
     const user = await query(
       `UPDATE users SET email_verified = true, verification_token = NULL 
-       WHERE verification_token = $1 RETURNING *`,
+       WHERE verification_token = $1 
+       RETURNING id, first_name, last_name, email, phone_number`,
       [token]
     );
 
@@ -204,14 +210,16 @@ router.get('/verify-email', [
       return res.status(400).json({ error: 'Invalid or expired verification token' });
     }
 
+    // Generate tokens if needed
     const { accessToken, refreshToken } = generateTokens(user.rows[0].id);
     await query('UPDATE users SET refresh_token = $1 WHERE id = $2', [refreshToken, user.rows[0].id]);
 
     res.json({
+      message: 'Email verified successfully',
+      verified: true,
       access_token: accessToken,
       refresh_token: refreshToken,
-      expires_in: 3600,
-      user: user.rows[0],
+      user: user.rows[0]
     });
   } catch (error) {
     console.error('Email Verification Error:', error);

@@ -7,15 +7,14 @@ const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const multer = require('multer');
 const path = require('path');
-const { query, pool } = require('../config/database');
 const transporter = require('../config/nodemailer');
 const createAccountLimiter = require('../config/createAccountLimiter');
 const apiLimiter = require('../config/apiLimiter');
-const { body, validationResult } = require('express-validator');
+const { body, query: validateQuery, validationResult } = require('express-validator');
+const { query: dbQuery, pool } = require('../config/database');
 
 const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
 
-// Configure multer with validation
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
     cb(null, 'uploads/ids/');
@@ -37,7 +36,6 @@ const upload = multer({
   limits: { fileSize: 5 * 1024 * 1024 }
 });
 
-// Middlewares
 const authenticateUser = async (req, res, next) => {
   try {
     const authHeader = req.headers.authorization;
@@ -47,7 +45,7 @@ const authenticateUser = async (req, res, next) => {
     if (!token) return res.status(401).json({ error: 'Access token missing' });
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    const user = await query('SELECT * FROM users WHERE id = $1', [decoded.id]);
+    const user = await dbQuery('SELECT * FROM users WHERE id = $1', [decoded.id]);
     
     if (!user.rows[0]) return res.status(401).json({ error: 'User not found' });
     if (user.rows[0].banned) return res.status(403).json({ error: 'Account suspended' });
@@ -55,7 +53,6 @@ const authenticateUser = async (req, res, next) => {
     req.user = user.rows[0];
     next();
   } catch (error) {
-    console.error('Authentication error:', error);
     res.status(401).json({ error: 'Invalid access token' });
   }
 };
@@ -64,7 +61,6 @@ const isAdmin = (req, res, next) => {
   req.user?.is_admin ? next() : res.status(403).json({ error: 'Admin access required' });
 };
 
-// Token generation
 const generateTokens = (userId) => ({
   accessToken: jwt.sign({ id: userId }, process.env.JWT_SECRET, { expiresIn: '1h' }),
   refreshToken: jwt.sign(
@@ -74,7 +70,6 @@ const generateTokens = (userId) => ({
   )
 });
 
-// Registration
 router.post('/register', [
   createAccountLimiter,
   body('first_name').notEmpty().trim().escape(),
@@ -96,7 +91,6 @@ router.post('/register', [
     await client.query('BEGIN');
     const { first_name, last_name, email, phone_number, password, age, gender } = req.body;
 
-    // Check existing user by provided credential
     const credential = email || phone_number;
     const checkField = email ? 'email' : 'phone_number';
     const existingUser = await client.query(
@@ -134,7 +128,6 @@ router.post('/register', [
       ]
     );
 
-    // Send verification to provided contact method
     if (phone_number) {
       await client.messages.create({
         body: `Your verification code: ${otpCode}`,
@@ -174,7 +167,6 @@ router.post('/register', [
     });    
   } catch (error) {
     await client.query('ROLLBACK');
-    console.error('Registration Error:', error);
     res.status(500).json({ 
       error: error.code === '23514' 
         ? 'Must provide email or phone' 
@@ -185,9 +177,8 @@ router.post('/register', [
   }
 });
 
-// Email Verification (Fixed Version)
 router.get('/verify-email', [
-  query('token') // ✅ Validate query parameter
+  validateQuery('token')
     .isLength({ min: 64, max: 64 })
     .withMessage('Invalid verification token format')
 ], async (req, res) => {
@@ -195,12 +186,10 @@ router.get('/verify-email', [
   if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
 
   try {
-    const { token } = req.query; // ✅ Get from query params
-    
-    const user = await query(
+    const { token } = req.query;
+    const user = await dbQuery(
       `UPDATE users SET email_verified = true, verification_token = NULL 
-       WHERE verification_token = $1 
-       RETURNING id, first_name, last_name, email, phone_number`,
+       WHERE verification_token = $1 RETURNING *`,
       [token]
     );
 
@@ -208,9 +197,8 @@ router.get('/verify-email', [
       return res.status(400).json({ error: 'Invalid or expired verification token' });
     }
 
-    // Generate tokens if needed
     const { accessToken, refreshToken } = generateTokens(user.rows[0].id);
-    await query('UPDATE users SET refresh_token = $1 WHERE id = $2', [refreshToken, user.rows[0].id]);
+    await dbQuery('UPDATE users SET refresh_token = $1 WHERE id = $2', [refreshToken, user.rows[0].id]);
 
     res.json({
       message: 'Email verified successfully',
@@ -220,12 +208,10 @@ router.get('/verify-email', [
       user: user.rows[0]
     });
   } catch (error) {
-    console.error('Email Verification Error:', error);
     res.status(500).json({ error: 'Email verification failed' });
   }
 });
 
-// Phone Verification
 router.post('/verify-phone', [
   body('phone_number').isMobilePhone(),
   body('otp').isLength({ min: 6, max: 6 })
@@ -235,7 +221,7 @@ router.post('/verify-phone', [
 
   try {
     const { phone_number, otp } = req.body;
-    const user = await query('SELECT * FROM users WHERE phone_number = $1', [phone_number]);
+    const user = await dbQuery('SELECT * FROM users WHERE phone_number = $1', [phone_number]);
 
     if (!user.rows[0]) return res.status(404).json({ error: 'User not found' });
 
@@ -248,10 +234,10 @@ router.post('/verify-phone', [
 
     if (!isValid) return res.status(401).json({ error: 'Invalid OTP' });
 
-    await query('UPDATE users SET phone_verified = true WHERE id = $1', [user.rows[0].id]);
+    await dbQuery('UPDATE users SET phone_verified = true WHERE id = $1', [user.rows[0].id]);
     
     const { accessToken, refreshToken } = generateTokens(user.rows[0].id);
-    await query('UPDATE users SET refresh_token = $1 WHERE id = $2', [refreshToken, user.rows[0].id]);
+    await dbQuery('UPDATE users SET refresh_token = $1 WHERE id = $2', [refreshToken, user.rows[0].id]);
 
     res.json({
       access_token: accessToken,
@@ -260,12 +246,10 @@ router.post('/verify-phone', [
       user: user.rows[0]
     });
   } catch (error) {
-    console.error('Phone Verification Error:', error);
     res.status(500).json({ error: 'Verification failed' });
   }
 });
 
-// Password Login
 router.post('/login', [
   apiLimiter,
   body('email').optional().isEmail(),
@@ -280,12 +264,12 @@ router.post('/login', [
     let user;
 
     if (email) {
-      user = await query('SELECT * FROM users WHERE email = $1', [email]);
+      user = await dbQuery('SELECT * FROM users WHERE email = $1', [email]);
       if (!user.rows[0]?.email_verified) {
         return res.status(401).json({ error: 'Email not verified' });
       }
     } else if (phone_number) {
-      user = await query('SELECT * FROM users WHERE phone_number = $1', [phone_number]);
+      user = await dbQuery('SELECT * FROM users WHERE phone_number = $1', [phone_number]);
       if (!user.rows[0]?.phone_verified) {
         return res.status(401).json({ error: 'Phone not verified' });
       }
@@ -296,7 +280,7 @@ router.post('/login', [
     }
 
     const { accessToken, refreshToken } = generateTokens(user.rows[0].id);
-    await query('UPDATE users SET refresh_token = $1 WHERE id = $2', [refreshToken, user.rows[0].id]);
+    await dbQuery('UPDATE users SET refresh_token = $1 WHERE id = $2', [refreshToken, user.rows[0].id]);
 
     res.json({
       access_token: accessToken,
@@ -305,12 +289,10 @@ router.post('/login', [
       user: user.rows[0]
     });
   } catch (error) {
-    console.error('Login Error:', error);
     res.status(500).json({ error: 'Login failed' });
   }
 });
 
-// OTP Login
 router.post('/login-otp', [
   apiLimiter,
   body('phone_number').isMobilePhone(),
@@ -321,7 +303,7 @@ router.post('/login-otp', [
 
   try {
     const { phone_number, otp } = req.body;
-    const user = await query('SELECT * FROM users WHERE phone_number = $1', [phone_number]);
+    const user = await dbQuery('SELECT * FROM users WHERE phone_number = $1', [phone_number]);
 
     if (!user.rows[0]) return res.status(404).json({ error: 'User not found' });
 
@@ -335,7 +317,7 @@ router.post('/login-otp', [
     if (!isValid) return res.status(401).json({ error: 'Invalid OTP' });
 
     const { accessToken, refreshToken } = generateTokens(user.rows[0].id);
-    await query('UPDATE users SET refresh_token = $1 WHERE id = $2', [refreshToken, user.rows[0].id]);
+    await dbQuery('UPDATE users SET refresh_token = $1 WHERE id = $2', [refreshToken, user.rows[0].id]);
 
     res.json({
       access_token: accessToken,
@@ -344,12 +326,10 @@ router.post('/login-otp', [
       user: user.rows[0]
     });
   } catch (error) {
-    console.error('OTP Login Error:', error);
     res.status(500).json({ error: 'Login failed' });
   }
 });
 
-// Refresh Tokens
 router.post('/refresh', [
   body('refresh_token').notEmpty()
 ], async (req, res) => {
@@ -359,7 +339,7 @@ router.post('/refresh', [
   try {
     const { refresh_token } = req.body;
     const decoded = jwt.verify(refresh_token, process.env.JWT_REFRESH_SECRET);
-    const user = await query(
+    const user = await dbQuery(
       'SELECT * FROM users WHERE id = $1 AND refresh_token = $2',
       [decoded.id, refresh_token]
     );
@@ -367,7 +347,7 @@ router.post('/refresh', [
     if (!user.rows[0]) return res.status(401).json({ error: 'Invalid refresh token' });
 
     const { accessToken, refreshToken } = generateTokens(user.rows[0].id);
-    await query('UPDATE users SET refresh_token = $1 WHERE id = $2', [refreshToken, user.rows[0].id]);
+    await dbQuery('UPDATE users SET refresh_token = $1 WHERE id = $2', [refreshToken, user.rows[0].id]);
 
     res.json({
       access_token: accessToken,
@@ -375,24 +355,20 @@ router.post('/refresh', [
       expires_in: 3600
     });
   } catch (error) {
-    console.error('Refresh Error:', error);
     res.status(401).json({ error: 'Invalid refresh token' });
   }
 });
 
-// Logout
 router.post('/logout', authenticateUser, async (req, res) => {
   try {
-    await query('UPDATE users SET refresh_token = NULL WHERE id = $1', [req.user.id]);
+    await dbQuery('UPDATE users SET refresh_token = NULL WHERE id = $1', [req.user.id]);
     res.clearCookie('refreshToken', { httpOnly: true, secure: true, sameSite: 'Strict' });
     res.sendStatus(204);
   } catch (error) {
-    console.error('Logout Error:', error);
     res.status(500).json({ error: 'Logout failed' });
   }
 });
 
-// OTP Request
 router.post('/request-otp', [
   apiLimiter,
   body('phone_number').isMobilePhone()
@@ -402,7 +378,7 @@ router.post('/request-otp', [
 
   try {
     const { phone_number } = req.body;
-    const user = await query('SELECT * FROM users WHERE phone_number = $1', [phone_number]);
+    const user = await dbQuery('SELECT * FROM users WHERE phone_number = $1', [phone_number]);
 
     if (!user.rows[0]) return res.status(404).json({ error: 'User not found' });
 
@@ -419,12 +395,10 @@ router.post('/request-otp', [
 
     res.json({ message: 'OTP sent successfully' });
   } catch (error) {
-    console.error('OTP Request Error:', error);
     res.status(500).json({ error: 'Failed to send OTP' });
   }
 });
 
-// Resend Verification Email
 router.post('/resend-verification', [
   body('email').isEmail()
 ], async (req, res) => {
@@ -433,11 +407,11 @@ router.post('/resend-verification', [
 
   try {
     const { email } = req.body;
-    const user = await query('SELECT * FROM users WHERE email = $1', [email]);
+    const user = await dbQuery('SELECT * FROM users WHERE email = $1', [email]);
     if (!user.rows[0]) return res.status(404).json({ error: 'User not found' });
 
     const verificationToken = crypto.randomBytes(32).toString('hex');
-    await query(
+    await dbQuery(
       'UPDATE users SET verification_token = $1 WHERE id = $2',
       [verificationToken, user.rows[0].id]
     );
@@ -451,12 +425,10 @@ router.post('/resend-verification', [
 
     res.json({ message: 'Verification email resent' });
   } catch (error) {
-    console.error('Resend Error:', error);
     res.status(500).json({ error: 'Failed to resend verification' });
   }
 });
 
-// ID Verification
 router.post('/verify-identity', 
   authenticateUser,
   upload.single('id_image'),
@@ -474,7 +446,7 @@ router.post('/verify-identity',
       const { name, age, gender, id_type } = req.body;
       const idImageUrl = `/ids/${req.file.filename}`;
 
-      await query(
+      await dbQuery(
         `UPDATE users 
         SET name = $1, age = $2, gender = $3, id_image_url = $4, id_verified = FALSE 
         WHERE id = $5`,
@@ -486,13 +458,11 @@ router.post('/verify-identity',
         verification_status: 'pending'
       });
     } catch (error) {
-      console.error('ID Verification Error:', error);
       res.status(500).json({ error: 'ID verification submission failed' });
     }
   }
 );
 
-// Admin Verification Approval
 router.post('/admin/verify-id', 
   authenticateUser,
   isAdmin,
@@ -505,7 +475,7 @@ router.post('/admin/verify-id',
 
     try {
       const { userId } = req.body;      
-      await query('UPDATE users SET id_verified = TRUE WHERE id = $1', [userId]);
+      await dbQuery('UPDATE users SET id_verified = TRUE WHERE id = $1', [userId]);
       res.json({ message: 'ID verification approved' });
     } catch (error) {
       res.status(500).json({ error: 'Verification approval failed' });
@@ -513,7 +483,6 @@ router.post('/admin/verify-id',
   }
 );
 
-// Protected Ride Posting
 router.post('/rides',
   authenticateUser,
   [
@@ -525,7 +494,6 @@ router.post('/rides',
     if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
 
     try {
-      // Actual ride creation logic would go here
       res.json({ message: 'Ride posted successfully' });
     } catch (error) {
       res.status(500).json({ error: 'Failed to post ride' });

@@ -69,7 +69,6 @@ const generateTokens = (userId) => ({
     { expiresIn: process.env.JWT_REFRESH_EXPIRY || '7d' }
   )
 });
-
 router.post('/register', [
   createAccountLimiter,
   body('first_name').notEmpty().trim().escape(),
@@ -89,7 +88,7 @@ router.post('/register', [
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const { first_name, last_name, email, phone_number, password, age, gender } = req.body;
+    const { first_name, last_name, email, phone_number, password } = req.body;
 
     const credential = email || phone_number;
     const checkField = email ? 'email' : 'phone_number';
@@ -112,9 +111,9 @@ router.post('/register', [
     const result = await client.query(
       `INSERT INTO users 
       (first_name, last_name, email, phone_number, password_hash, 
-       verification_token, otp_secret, age, gender) 
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-      RETURNING id, first_name, last_name, email, phone_number, age, gender`,
+       verification_token, otp_secret) 
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      RETURNING id, first_name, last_name, email, phone_number`,
       [
         first_name, 
         last_name, 
@@ -122,9 +121,7 @@ router.post('/register', [
         phone_number || null, 
         hashedPassword,
         verificationToken,
-        otpSecret,
-        age || null, 
-        gender || null
+        otpSecret
       ]
     );
 

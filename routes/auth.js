@@ -474,7 +474,8 @@ router.post('/verify-identity',
   authenticateUser,
   upload.single('id_image'),
   [
-    body('name').notEmpty(),
+    body('first_name').notEmpty(),
+    body('last_name').notEmpty(),
     body('age').isInt({ min: 18 }),
     body('gender').isIn(['male', 'female', 'other']),
     body('id_type').notEmpty()
@@ -484,14 +485,15 @@ router.post('/verify-identity',
     if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
 
     try {
-      const { name, age, gender, id_type } = req.body;
+      const { first_name, last_name, age, gender, id_type } = req.body;
       const idImageUrl = `/ids/${req.file.filename}`;
 
+      // Update the query to use first_name and last_name instead of name
       await dbQuery(
         `UPDATE users 
-        SET name = $1, age = $2, gender = $3, id_image_url = $4, id_verified = FALSE 
-        WHERE id = $5`,
-        [name, age, gender, idImageUrl, req.user.id]
+        SET first_name = $1, last_name = $2, age = $3, gender = $4, id_image_url = $5, id_verified = FALSE 
+        WHERE id = $6`,
+        [first_name, last_name, age, gender, idImageUrl, req.user.id]
       );
 
       res.status(201).json({ 

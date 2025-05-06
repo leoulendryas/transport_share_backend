@@ -491,7 +491,7 @@ router.post('/verify-identity',
       // Update the query to use first_name and last_name instead of name
       await dbQuery(
         `UPDATE users 
-        SET first_name = $1, last_name = $2, age = $3, gender = $4, id_image_url = $5, id_verified = FALSE 
+        SET first_name = $1, last_name = $2, age = $3, gender = $4, id_image_url = $5, id_verified = TRUE 
         WHERE id = $6`,
         [first_name, last_name, age, gender, idImageUrl, req.user.id]
       );

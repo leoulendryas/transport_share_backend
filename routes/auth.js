@@ -62,11 +62,10 @@ const isAdmin = (req, res, next) => {
 };
 
 const generateTokens = (userId) => ({
-  accessToken: jwt.sign({ id: userId }, process.env.JWT_SECRET, { expiresIn: '1h' }),
+  accessToken: jwt.sign({ id: userId }, process.env.JWT_SECRET),
   refreshToken: jwt.sign(
     { id: userId }, 
     process.env.JWT_REFRESH_SECRET, 
-    { expiresIn: process.env.JWT_REFRESH_EXPIRY || '7d' }
   )
 });
 router.post('/register', [

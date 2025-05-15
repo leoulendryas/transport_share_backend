@@ -279,7 +279,6 @@ router.post('/verify-phone', [
     res.json({
       access_token: accessToken,
       refresh_token: refreshToken,
-      expires_in: 3600,
       user: user.rows[0]
     });
   } catch (error) {
@@ -322,7 +321,6 @@ router.post('/login', [
     res.json({
       access_token: accessToken,
       refresh_token: refreshToken,
-      expires_in: 3600,
       user: user.rows[0]
     });
   } catch (error) {
@@ -359,7 +357,6 @@ router.post('/login-otp', [
     res.json({
       access_token: accessToken,
       refresh_token: refreshToken,
-      expires_in: 3600,
       user: user.rows[0]
     });
   } catch (error) {
@@ -389,7 +386,6 @@ router.post('/refresh', [
     res.json({
       access_token: accessToken,
       refresh_token: refreshToken,
-      expires_in: 3600
     });
   } catch (error) {
     res.status(401).json({ error: 'Invalid refresh token' });

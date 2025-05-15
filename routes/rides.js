@@ -89,9 +89,14 @@ router.post('/', authenticate, validateCoordinates, async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const { from, to, seats, departure_time, from_address, to_address, companies } = req.body;
 
-    const requiredFields = ['from', 'to', 'seats'];
+    const {
+      from, to, seats, departure_time,
+      from_address, to_address, companies,
+      plate_number, color, brand_name
+    } = req.body;
+
+    const requiredFields = ['from', 'to', 'seats', 'plate_number', 'color', 'brand_name'];
     for (const field of requiredFields) {
       if (!req.body[field]) throw new Error(`Missing required field: ${field}`);
     }
@@ -107,9 +112,11 @@ router.post('/', authenticate, validateCoordinates, async (req, res) => {
     const rideResult = await client.query(
       `INSERT INTO rides 
        (driver_id, from_location, from_address, to_location, to_address, 
-        total_seats, seats_available, departure_time, created_at)
+        total_seats, seats_available, departure_time, created_at,
+        plate_number, color, brand_name)
        VALUES ($1, ST_SetSRID(ST_MakePoint($2, $3), 4326), $4, 
-              ST_SetSRID(ST_MakePoint($5, $6), 4326), $7, $8, $9, $10, NOW())
+               ST_SetSRID(ST_MakePoint($5, $6), 4326), $7, 
+               $8, $9, $10, NOW(), $11, $12, $13)
        RETURNING *`,
       [
         req.user.id,
@@ -119,7 +126,10 @@ router.post('/', authenticate, validateCoordinates, async (req, res) => {
         to_address,
         seats + 1,
         seats,
-        departure_time || null
+        departure_time || null,
+        plate_number,
+        color,
+        brand_name
       ]
     );
 
@@ -132,7 +142,7 @@ router.post('/', authenticate, validateCoordinates, async (req, res) => {
       if (companyCheck.rowCount === 0) {
         throw new Error(`Company with ID ${companyId} does not exist`);
       }
-    
+
       await client.query(
         'INSERT INTO ride_company_mapping (ride_id, company_id) VALUES ($1, $2)',
         [rideResult.rows[0].id, companyId]
@@ -170,7 +180,20 @@ router.get('/', paginate, async (req, res) => {
 
     let queryText = `
       SELECT 
-        r.*,
+        r.id,
+        r.driver_id,
+        r.from_location,
+        r.from_address,
+        r.to_location,
+        r.to_address,
+        r.total_seats,
+        r.seats_available,
+        r.departure_time,
+        r.status,
+        r.created_at,
+        r.plate_number,
+        r.color,
+        r.brand_name,
         u.email as driver_email,
         COUNT(ur.user_id) as participants,
         ST_X(r.from_location::geometry) as from_lng,
@@ -203,6 +226,7 @@ router.get('/', paginate, async (req, res) => {
     params.push(req.query.limit, offset);
 
     const result = await client.query(queryText, params);
+
     const countResult = await client.query(
       `SELECT COUNT(*) as total FROM rides r
        WHERE r.status = 'active'
@@ -235,10 +259,22 @@ router.get('/:id', authenticate, async (req, res) => {
     const rideId = req.params.id;
     const userId = req.user.id;
 
-    // Get ride details
     const rideResult = await client.query(
       `SELECT 
-        r.*,
+        r.id,
+        r.driver_id,
+        r.from_location,
+        r.from_address,
+        r.to_location,
+        r.to_address,
+        r.total_seats,
+        r.seats_available,
+        r.departure_time,
+        r.status,
+        r.created_at,
+        r.plate_number,
+        r.color,
+        r.brand_name,
         u.email as driver_email,
         ST_X(r.from_location::geometry) as from_lng,
         ST_Y(r.from_location::geometry) as from_lat,
@@ -259,7 +295,6 @@ router.get('/:id', authenticate, async (req, res) => {
       return res.status(404).json({ error: 'Ride not found' });
     }
 
-    // Get participants
     const participantsResult = await client.query(
       `SELECT 
         u.id, u.email, 
@@ -274,7 +309,6 @@ router.get('/:id', authenticate, async (req, res) => {
     const response = {
       ...rideResult.rows[0],
       participants: participantsResult.rows,
-      // Include participation status for current user
       current_user: {
         is_participant: rideResult.rows[0].is_participant,
         is_driver: rideResult.rows[0].is_driver
@@ -297,7 +331,20 @@ router.get('/user/active-rides', authenticate, paginate, async (req, res) => {
 
     const queryText = `
       SELECT DISTINCT
-        r.*,
+        r.id,
+        r.driver_id,
+        r.from_location,
+        r.from_address,
+        r.to_location,
+        r.to_address,
+        r.total_seats,
+        r.seats_available,
+        r.departure_time,
+        r.status,
+        r.created_at,
+        r.plate_number,
+        r.color,
+        r.brand_name,
         u.email as driver_email,
         (SELECT COUNT(*) FROM user_rides WHERE ride_id = r.id) as participants,
         ST_X(r.from_location::geometry) as from_lng,
@@ -339,7 +386,7 @@ router.get('/user/active-rides', authenticate, paginate, async (req, res) => {
 
     res.json(response);
   } catch (error) {
-    console.error('Error in /user/active-rides:', error); // Log the error for debugging
+    console.error('Error in /user/active-rides:', error);
     res.status(500).json({ error: 'Failed to fetch user rides', details: error.message });
   } finally {
     client.release();

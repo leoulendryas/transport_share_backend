@@ -1,7 +1,7 @@
 const express = require('express');
 const { pool, query } = require('../config/database');
 const { rideConnections } = require('../config/websocket');
-const { authenticate, validateCoordinates, paginate, cache } = require('../middlewares');
+const { authenticate, validateCoordinates, validateCoordinatesForPrice, paginate, cache } = require('../middlewares');
 const cron = require('node-cron');
 const axios = require('axios');
 const WebSocket = require('ws');
@@ -74,7 +74,7 @@ function isValidEthiopianLocation({ lat, lng }) {
   return lat >= latMin && lat <= latMax && lng >= lngMin && lng <= lngMax;
 }
 
-router.post('/calculate-price', authenticate, validateCoordinates, async (req, res) => {
+router.post('/calculate-price', authenticate, validateCoordinatesForPrice, async (req, res) => {
   try {
     console.log('GraphHopper API Key:', process.env.GRAPHHOPPER_API_KEY);
 

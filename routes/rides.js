@@ -10,6 +10,11 @@ const router = express.Router();
 
 async function getRouteDistanceAndDuration(payload) {
   const { from, to } = payload;
+
+  if (!from || !to || !from.lat || !from.lng || !to.lat || !to.lng) {
+    throw new Error("Invalid payload: 'from' and 'to' must include 'lat' and 'lng'");
+  }
+
   const apiKey = process.env.ORS_API_KEY;
 
   const url = 'https://api.openrouteservice.org/v2/directions/driving-car';
@@ -33,8 +38,8 @@ async function getRouteDistanceAndDuration(payload) {
     const route = data.features[0].properties.segments[0];
 
     return {
-      distance: route.distance, // in meters
-      duration: route.duration, // in seconds
+      distance: route.distance, // meters
+      duration: route.duration, // seconds
     };
 
   } catch (error) {

@@ -39,12 +39,14 @@ const authenticate = (req, res, next) => {
 const validateCoordinates = (req, res, next) => {
   const { from, to } = req.body;
 
-  // Validate coordinate structure
-  if (!from?.lat || !from?.lng || !to?.lat || !to?.lng) {
+  // Validate structure
+  if (
+    typeof from?.lat !== 'number' || typeof from?.lng !== 'number' ||
+    typeof to?.lat !== 'number' || typeof to?.lng !== 'number'
+  ) {
     return res.status(400).json({ error: "Invalid coordinate format" });
   }
 
-  // Validate Ethiopia boundaries
   const ETH_BOUNDS = {
     latMin: 3.397, latMax: 14.894,
     lngMin: 32.997, lngMax: 47.989

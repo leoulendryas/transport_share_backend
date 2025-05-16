@@ -8,46 +8,39 @@ const WebSocket = require('ws');
 
 const router = express.Router();
 
-async function getRouteDistanceAndDuration(payload) {
-  const { from, to } = payload;
-
+async function getRouteDistanceAndDuration({ from, to }) {
   if (!from || !to || !from.lat || !from.lng || !to.lat || !to.lng) {
-    throw new Error("Invalid payload: 'from' and 'to' must include 'lat' and 'lng'");
+    throw new Error("Invalid coordinates format");
   }
 
   const apiKey = process.env.ORS_API_KEY;
-
   const url = 'https://api.openrouteservice.org/v2/directions/driving-car';
 
-  const requestBody = {
-    coordinates: [
-      [from.lng, from.lat],
-      [to.lng, to.lat],
-    ]
-  };
-
   try {
-    const response = await axios.post(url, requestBody, {
+    const response = await axios.post(url, {
+      coordinates: [
+        [from.lng, from.lat],
+        [to.lng, to.lat]
+      ]
+    }, {
       headers: {
         Authorization: apiKey,
         'Content-Type': 'application/json',
       },
     });
 
-    const data = response.data;
-    const route = data.features[0].properties.segments[0];
+    if (!response.data?.features?.length) {
+      throw new Error('No route found between locations');
+    }
 
+    const route = response.data.features[0].properties.segments[0];
     return {
       distance: route.distance, // meters
       duration: route.duration, // seconds
     };
-
   } catch (error) {
-    console.error('ORS API Error:', {
-      status: error.response?.status,
-      data: error.response?.data
-    });
-    throw new Error(`Route calculation failed: ${error.message}`);
+    console.error('ORS API Error:', error.response?.data || error.message);
+    throw new Error(`Route calculation failed: ${error.response?.data?.error || error.message}`);
   }
 }
 
@@ -74,13 +67,20 @@ function calculatePriceRange(distanceMeters, durationSeconds, seats) {
   };
 }
 
+// Change the function call in your POST route
 router.post('/calculate-price', authenticate, validateCoordinates, async (req, res) => {
   try {
     const { from, to, seats } = req.body;
-    if (!from || !to || !seats) throw new Error('Missing required fields: from, to, seats');
-    if (seats < 1 || seats > 8) throw new Error('Seats must be between 1 and 8');
+    
+    // Add this validation check
+    if (!from?.lat || !from?.lng || !to?.lat || !to?.lng) {
+      throw new Error("Invalid coordinates format");
+    }
 
-    const { distance, duration } = await getRouteDistanceAndDuration(from, to);
+    // Pass the complete payload object
+    const { distance, duration } = await getRouteDistanceAndDuration({ from, to });
+    
+    // Rest of your code remains the same
     const { minPrice, maxPrice, basePricePerSeat } = calculatePriceRange(
       distance, duration, seats
     );

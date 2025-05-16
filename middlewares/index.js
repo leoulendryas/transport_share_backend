@@ -38,10 +38,19 @@ const authenticate = (req, res, next) => {
 
 const validateCoordinates = (req, res, next) => {
   const { from, to } = req.body;
-  if (from.lat < -90 || from.lat > 90 || from.lng < -180 || from.lng > 180 ||
-      to.lat < -90 || to.lat > 90 || to.lng < -180 || to.lng > 180) {
+
+  if (
+    !from || !to ||                    // Check that from and to exist
+    typeof from.lat !== 'number' || typeof from.lng !== 'number' ||  // Check they have lat/lng as numbers
+    typeof to.lat !== 'number' || typeof to.lng !== 'number' ||
+    from.lat < -90 || from.lat > 90 ||
+    from.lng < -180 || from.lng > 180 ||
+    to.lat < -90 || to.lat > 90 ||
+    to.lng < -180 || to.lng > 180
+  ) {
     return res.status(400).json({ error: 'Invalid coordinates' });
   }
+
   next();
 };
 

@@ -7,17 +7,42 @@ const axios = require('axios');
 const WebSocket = require('ws');
 
 const router = express.Router();
+const axios = require('axios');
 
 async function getRouteDistanceAndDuration(from, to) {
-  const apiKey = process.env.GOOGLE_MAPS_API_KEY;
-  const url = `https://maps.googleapis.com/maps/api/distancematrix/json?units=imperial&origins=${from.lat},${from.lng}&destinations=${to.lat},${to.lng}&key=${apiKey}`;
-  const response = await axios.get(url);
-  const element = response.data.rows[0].elements[0];
-  if (element.status !== 'OK') throw new Error('Failed to calculate route');
-  return { 
-    distance: element.distance.value, 
-    duration: element.duration.value 
-  };
+  const apiKey = process.env.ORS_API_KEY; // Set this in your .env file
+  const url = 'https://api.openrouteservice.org/v2/directions/driving-car';
+
+  try {
+    const response = await axios.post(
+      url,
+      {
+        coordinates: [
+          [from.lng, from.lat],
+          [to.lng, to.lat]
+        ]
+      },
+      {
+        headers: {
+          Authorization: apiKey,
+          'Content-Type': 'application/json',
+        }
+      }
+    );
+
+    const summary = response.data.features[0].properties.summary;
+
+    return {
+      distance: summary.distance, // in meters
+      duration: summary.duration  // in seconds
+    };
+  } catch (error) {
+    console.error('OpenRouteService API Error:', {
+      status: error.response?.status,
+      data: error.response?.data
+    });
+    throw new Error(`Route calculation failed: ${error.message}`);
+  }
 }
 
 function calculatePriceRange(distanceMeters, durationSeconds, seats) {

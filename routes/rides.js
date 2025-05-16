@@ -3,8 +3,68 @@ const { pool, query } = require('../config/database');
 const { rideConnections } = require('../config/websocket');
 const { authenticate, validateCoordinates, paginate, cache } = require('../middlewares');
 const cron = require('node-cron');
+const axios = require('axios');
+const WebSocket = require('ws');
 
 const router = express.Router();
+
+async function getRouteDistanceAndDuration(from, to) {
+  const apiKey = process.env.GOOGLE_MAPS_API_KEY;
+  const url = `https://maps.googleapis.com/maps/api/distancematrix/json?units=imperial&origins=${from.lat},${from.lng}&destinations=${to.lat},${to.lng}&key=${apiKey}`;
+  const response = await axios.get(url);
+  const element = response.data.rows[0].elements[0];
+  if (element.status !== 'OK') throw new Error('Failed to calculate route');
+  return { 
+    distance: element.distance.value, 
+    duration: element.duration.value 
+  };
+}
+
+function calculatePriceRange(distanceMeters, durationSeconds, seats) {
+  const fuelPricePerGallon = 4.0;
+  const mpg = 25;
+  const maintenancePerMile = 0.20;
+  const hourlyRate = 10;
+
+  const distanceMiles = distanceMeters / 1609.34;
+  const durationHours = durationSeconds / 3600;
+
+  const fuelCost = (distanceMiles / mpg) * fuelPricePerGallon;
+  const maintenanceCost = distanceMiles * maintenancePerMile;
+  const timeCost = durationHours * hourlyRate;
+
+  const totalCost = fuelCost + maintenanceCost + timeCost;
+  const basePricePerSeat = totalCost / seats;
+
+  return {
+    minPrice: basePricePerSeat * 0.9,
+    maxPrice: basePricePerSeat * 1.3,
+    basePricePerSeat
+  };
+}
+
+router.post('/calculate-price', authenticate, validateCoordinates, async (req, res) => {
+  try {
+    const { from, to, seats } = req.body;
+    if (!from || !to || !seats) throw new Error('Missing required fields: from, to, seats');
+    if (seats < 1 || seats > 8) throw new Error('Seats must be between 1 and 8');
+
+    const { distance, duration } = await getRouteDistanceAndDuration(from, to);
+    const { minPrice, maxPrice, basePricePerSeat } = calculatePriceRange(
+      distance, duration, seats
+    );
+
+    res.json({
+      min_price: minPrice,
+      max_price: maxPrice,
+      base_price: basePricePerSeat,
+      distance: distance / 1609.34,
+      duration: duration / 3600
+    });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
 
 async function cancelRide(rideId) {
   const client = await pool.connect();
@@ -89,14 +149,13 @@ router.post('/', authenticate, validateCoordinates, async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-
     const {
-      from, to, seats, departure_time,
+      from, to, seats, departure_time, price_per_seat,
       from_address, to_address, companies,
       plate_number, color, brand_name
     } = req.body;
 
-    const requiredFields = ['from', 'to', 'seats', 'plate_number', 'color', 'brand_name'];
+    const requiredFields = ['from', 'to', 'seats', 'plate_number', 'color', 'brand_name', 'price_per_seat'];
     for (const field of requiredFields) {
       if (!req.body[field]) throw new Error(`Missing required field: ${field}`);
     }
@@ -109,14 +168,20 @@ router.post('/', authenticate, validateCoordinates, async (req, res) => {
       throw new Error('Departure time must be in the future');
     }
 
+    const { distance, duration } = await getRouteDistanceAndDuration(from, to);
+    const { minPrice, maxPrice } = calculatePriceRange(distance, duration, seats);
+    if (price_per_seat < minPrice || price_per_seat > maxPrice) {
+      throw new Error(`Price must be between $${minPrice.toFixed(2)} and $${maxPrice.toFixed(2)}`);
+    }
+
     const rideResult = await client.query(
       `INSERT INTO rides 
        (driver_id, from_location, from_address, to_location, to_address, 
         total_seats, seats_available, departure_time, created_at,
-        plate_number, color, brand_name)
+        plate_number, color, brand_name, price_per_seat)
        VALUES ($1, ST_SetSRID(ST_MakePoint($2, $3), 4326), $4, 
                ST_SetSRID(ST_MakePoint($5, $6), 4326), $7, 
-               $8, $9, $10, NOW(), $11, $12, $13)
+               $8, $9, $10, NOW(), $11, $12, $13, $14)
        RETURNING *`,
       [
         req.user.id,
@@ -129,7 +194,8 @@ router.post('/', authenticate, validateCoordinates, async (req, res) => {
         departure_time || null,
         plate_number,
         color,
-        brand_name
+        brand_name,
+        price_per_seat
       ]
     );
 
@@ -182,6 +248,7 @@ router.get('/', paginate, async (req, res) => {
       SELECT 
         r.id,
         r.driver_id,
+        r.price_per_seat,
         r.from_location,
         r.from_address,
         r.to_location,
@@ -263,6 +330,7 @@ router.get('/:id', authenticate, async (req, res) => {
       `SELECT 
         r.id,
         r.driver_id,
+        r.price_per_seat,
         r.from_location,
         r.from_address,
         r.to_location,
@@ -333,6 +401,7 @@ router.get('/user/active-rides', authenticate, paginate, async (req, res) => {
       SELECT DISTINCT
         r.id,
         r.driver_id,
+        r.price_per_seat,
         r.from_location,
         r.from_address,
         r.to_location,

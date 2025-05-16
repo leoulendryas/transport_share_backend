@@ -42,10 +42,10 @@ async function getRouteDistanceAndDuration({ from, to }) {
 }
 
 function calculatePriceRange(distanceMeters, durationSeconds, seats) {
-  const fuelPricePerGallon = 4.0;
-  const mpg = 25;
-  const maintenancePerMile = 0.20;
-  const hourlyRate = 10;
+  const fuelPricePerGallon = 384.11; // ETB
+  const mpg = 25; // miles per gallon
+  const maintenancePerMile = 10.90; // ETB per mile
+  const hourlyRate = 545; // ETB per hour
 
   const distanceMiles = distanceMeters / 1609.34;
   const durationHours = durationSeconds / 3600;

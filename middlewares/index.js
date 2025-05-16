@@ -38,11 +38,33 @@ const authenticate = (req, res, next) => {
 
 const validateCoordinates = (req, res, next) => {
   const { from, to } = req.body;
-  if (from.lat < -90 || from.lat > 90 || from.lng < -180 || from.lng > 180 ||
-      to.lat < -90 || to.lat > 90 || to.lng < -180 || to.lng > 180) {
-    return res.status(400).json({ error: 'Invalid coordinates' });
+
+  // Validate coordinate structure
+  if (!from?.lat || !from?.lng || !to?.lat || !to?.lng) {
+    return res.status(400).json({ error: "Invalid coordinate format" });
   }
-  next();
+
+  // Validate Ethiopia boundaries
+  const ETH_BOUNDS = {
+    latMin: 3.397, latMax: 14.894,
+    lngMin: 32.997, lngMax: 47.989
+  };
+
+  const validateRange = (val, min, max, name) => {
+    if (val < min || val > max) {
+      throw new Error(`${name} coordinate out of Ethiopian range`);
+    }
+  };
+
+  try {
+    validateRange(from.lat, ETH_BOUNDS.latMin, ETH_BOUNDS.latMax, "From latitude");
+    validateRange(from.lng, ETH_BOUNDS.lngMin, ETH_BOUNDS.lngMax, "From longitude");
+    validateRange(to.lat, ETH_BOUNDS.latMin, ETH_BOUNDS.latMax, "To latitude");
+    validateRange(to.lng, ETH_BOUNDS.lngMin, ETH_BOUNDS.lngMax, "To longitude");
+    next();
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
 };
 
 const paginate = (req, res, next) => {

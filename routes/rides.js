@@ -8,89 +8,36 @@ const WebSocket = require('ws');
 
 const router = express.Router();
 
-// Add to your routes file
-const validateCoordinates = (req, res, next) => {
-  const { from, to } = req.body;
-
-  // Validate coordinate structure
-  if (!from?.lat || !from?.lng || !to?.lat || !to?.lng) {
-    return res.status(400).json({ error: "Invalid coordinate format" });
-  }
-
-  // Validate Ethiopia boundaries
-  const ETH_BOUNDS = {
-    latMin: 3.397, latMax: 14.894,
-    lngMin: 32.997, lngMax: 47.989
-  };
-
-  const validateRange = (val, min, max, name) => {
-    if (val < min || val > max) {
-      throw new Error(`${name} coordinate out of Ethiopian range`);
-    }
-  };
-
-  try {
-    validateRange(from.lat, ETH_BOUNDS.latMin, ETH_BOUNDS.latMax, "From latitude");
-    validateRange(from.lng, ETH_BOUNDS.lngMin, ETH_BOUNDS.lngMax, "From longitude");
-    validateRange(to.lat, ETH_BOUNDS.latMin, ETH_BOUNDS.latMax, "To latitude");
-    validateRange(to.lng, ETH_BOUNDS.lngMin, ETH_BOUNDS.lngMax, "To longitude");
-    next();
-  } catch (error) {
-    res.status(400).json({ error: error.message });
-  }
-};
-
 async function getRouteDistanceAndDuration({ from, to }) {
   try {
-    const apiKey = process.env.ORS_API_KEY;
-    if (!apiKey) throw new Error('Missing ORS API key');
+    const apiKey = process.env.GRAPHHOPPER_API_KEY;
+    if (!apiKey) throw new Error('Missing GraphHopper API key');
 
-    // Add coordinate snapping
-    const response = await axios.post(
-      'https://api.openrouteservice.org/v2/directions/driving-car',
-      {
-        coordinates: [
-          [from.lng, from.lat],
-          [to.lng, to.lat]
-        ],
-        options: {
-          snapping_include_junctions: true
-        }
-      },
-      {
-        headers: {
-          Authorization: apiKey,
-          'Content-Type': 'application/json'
-        },
-        timeout: 10000
-      }
-    );
+    const url = `https://graphhopper.com/api/1/route?point=${from.lat},${from.lng}&point=${to.lat},${to.lng}&vehicle=car&locale=en&key=${apiKey}`;
 
-    // Handle empty responses
-    if (!response.data?.features?.length) {
-      console.error('ORS Response:', response.data);
-      throw new Error('No drivable route found between locations');
+    const response = await axios.get(url);
+
+    if (response.data?.paths?.length === 0) {
+      throw new Error('No route found between points');
     }
 
-    // Validate route structure
-    const feature = response.data.features[0];
-    if (!feature?.properties?.segments?.[0]?.distance) {
-      throw new Error('Invalid route data structure');
-    }
-
+    const path = response.data.paths[0];
     return {
-      distance: feature.properties.segments[0].distance,
-      duration: feature.properties.segments[0].duration
+      distance: path.distance, // meters
+      duration: path.time / 1000 // convert ms to seconds
     };
 
   } catch (error) {
-    // Handle specific ORS error codes
-    const orsError = error.response?.data?.error;
-    if (orsError?.code === 2004) {
-      throw new Error('No driving route available between these points');
-    }
-    
-    throw new Error(orsError?.message || error.message);
+    console.error('GraphHopper Error:', {
+      status: error.response?.status,
+      data: error.response?.data,
+      message: error.message
+    });
+
+    throw new Error(
+      error.response?.data?.message ||
+      `Routing failed: ${error.message}`
+    );
   }
 }
 
@@ -118,35 +65,41 @@ function calculatePriceRange(distanceMeters, durationSeconds, seats) {
 }
 
 // Change the function call in your POST route
+function isValidEthiopianLocation({ lat, lng }) {
+  const latMin = 3.4;
+  const latMax = 14.9;
+  const lngMin = 32.9;
+  const lngMax = 48.0;
+
+  return lat >= latMin && lat <= latMax && lng >= lngMin && lng <= lngMax;
+}
+
 router.post('/calculate-price', authenticate, validateCoordinates, async (req, res) => {
   try {
-    const { from, to, seats } = req.body;
-    
-    // Enhanced logging
-    console.log('Route calculation request:', { from, to });
+    console.log('GraphHopper API Key:', process.env.GRAPHHOPPER_API_KEY);
 
-    const { distance, duration } = await getRouteDistanceAndDuration(from, to);
-    
-    // Rest of your logic
-    const { minPrice, maxPrice, basePricePerSeat } = calculatePriceRange(
-      distance, 
-      duration, 
-      seats
-    );
+    const { from, to, seats } = req.body;
+
+    if (!isValidEthiopianLocation(from) || !isValidEthiopianLocation(to)) {
+      return res.status(400).json({ error: 'Locations must be within Ethiopia' });
+    }
+
+    const { distance, duration } = await getRouteDistanceAndDuration({ from, to });
+
+    const { minPrice, maxPrice, basePricePerSeat } = calculatePriceRange(distance, duration, seats);
 
     res.json({
       min_price: minPrice,
       max_price: maxPrice,
       base_price: basePricePerSeat,
-      distance: distance / 1609.34,
-      duration: duration / 3600
+      distance: distance / 1000,
+      duration: duration / 60
     });
 
   } catch (error) {
-    console.error('Full calculation error:', error);
-    res.status(400).json({ 
+    res.status(400).json({
       error: error.message,
-      debug: process.env.NODE_ENV === 'development' ? error.stack : undefined
+      code: error.response?.data?.hints?.[0]?.details
     });
   }
 });

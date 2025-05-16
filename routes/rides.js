@@ -7,37 +7,38 @@ const axios = require('axios');
 const WebSocket = require('ws');
 
 const router = express.Router();
-const axios = require('axios');
 
-async function getRouteDistanceAndDuration(from, to) {
-  const apiKey = process.env.ORS_API_KEY; // Set this in your .env file
+async function getRouteDistanceAndDuration(payload) {
+  const { from, to } = payload;
+  const apiKey = process.env.ORS_API_KEY;
+
   const url = 'https://api.openrouteservice.org/v2/directions/driving-car';
 
-  try {
-    const response = await axios.post(
-      url,
-      {
-        coordinates: [
-          [from.lng, from.lat],
-          [to.lng, to.lat]
-        ]
-      },
-      {
-        headers: {
-          Authorization: apiKey,
-          'Content-Type': 'application/json',
-        }
-      }
-    );
+  const requestBody = {
+    coordinates: [
+      [from.lng, from.lat],
+      [to.lng, to.lat],
+    ]
+  };
 
-    const summary = response.data.features[0].properties.summary;
+  try {
+    const response = await axios.post(url, requestBody, {
+      headers: {
+        Authorization: apiKey,
+        'Content-Type': 'application/json',
+      },
+    });
+
+    const data = response.data;
+    const route = data.features[0].properties.segments[0];
 
     return {
-      distance: summary.distance, // in meters
-      duration: summary.duration  // in seconds
+      distance: route.distance, // in meters
+      duration: route.duration, // in seconds
     };
+
   } catch (error) {
-    console.error('OpenRouteService API Error:', {
+    console.error('ORS API Error:', {
       status: error.response?.status,
       data: error.response?.data
     });

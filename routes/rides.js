@@ -9,38 +9,56 @@ const WebSocket = require('ws');
 const router = express.Router();
 
 async function getRouteDistanceAndDuration({ from, to }) {
-  if (!from || !to || !from.lat || !from.lng || !to.lat || !to.lng) {
-    throw new Error("Invalid coordinates format");
-  }
-
-  const apiKey = process.env.ORS_API_KEY;
-  const url = 'https://api.openrouteservice.org/v2/directions/driving-car';
-
   try {
-    const response = await axios.post(url, {
-      coordinates: [
-        [from.lng, from.lat],
-        [to.lng, to.lat]
-      ]
-    }, {
-      headers: {
-        Authorization: apiKey,
-        'Content-Type': 'application/json',
+    const apiKey = process.env.ORS_API_KEY;
+    if (!apiKey) throw new Error('Missing ORS API key');
+
+    const response = await axios.post(
+      'https://api.openrouteservice.org/v2/directions/driving-car',
+      {
+        coordinates: [
+          [from.lng, from.lat], // ORS uses [longitude, latitude] order
+          [to.lng, to.lat]
+        ],
+        instructions: false,
+        elevation: false
       },
-    });
+      {
+        headers: {
+          Authorization: apiKey,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
 
     if (!response.data?.features?.length) {
-      throw new Error('No route found between locations');
+      console.error('ORS Response:', response.data);
+      throw new Error('No route features in response');
     }
 
-    const route = response.data.features[0].properties.segments[0];
+    const feature = response.data.features[0];
+    if (!feature.properties?.segments?.length) {
+      console.error('Route Feature:', feature);
+      throw new Error('No segments in route feature');
+    }
+
     return {
-      distance: route.distance, // meters
-      duration: route.duration, // seconds
+      distance: feature.properties.segments[0].distance,
+      duration: feature.properties.segments[0].duration
     };
+
   } catch (error) {
-    console.error('ORS API Error:', error.response?.data || error.message);
-    throw new Error(`Route calculation failed: ${error.response?.data?.error || error.message}`);
+    console.error('Full ORS Error:', {
+      status: error.response?.status,
+      headers: error.response?.headers,
+      data: error.response?.data,
+      message: error.message
+    });
+    
+    throw new Error(
+      error.response?.data?.error?.message || 
+      `Route calculation failed: ${error.message}`
+    );
   }
 }
 

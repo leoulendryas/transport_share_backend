@@ -8,17 +8,44 @@ const WebSocket = require('ws');
 
 const router = express.Router();
 
+// Add to your routes file
+const validateCoordinates = (req, res, next) => {
+  const { from, to } = req.body;
+
+  // Validate coordinate structure
+  if (!from?.lat || !from?.lng || !to?.lat || !to?.lng) {
+    return res.status(400).json({ error: "Invalid coordinate format" });
+  }
+
+  // Validate Ethiopia boundaries
+  const ETH_BOUNDS = {
+    latMin: 3.397, latMax: 14.894,
+    lngMin: 32.997, lngMax: 47.989
+  };
+
+  const validateRange = (val, min, max, name) => {
+    if (val < min || val > max) {
+      throw new Error(`${name} coordinate out of Ethiopian range`);
+    }
+  };
+
+  try {
+    validateRange(from.lat, ETH_BOUNDS.latMin, ETH_BOUNDS.latMax, "From latitude");
+    validateRange(from.lng, ETH_BOUNDS.lngMin, ETH_BOUNDS.lngMax, "From longitude");
+    validateRange(to.lat, ETH_BOUNDS.latMin, ETH_BOUNDS.latMax, "To latitude");
+    validateRange(to.lng, ETH_BOUNDS.lngMin, ETH_BOUNDS.lngMax, "To longitude");
+    next();
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+};
+
 async function getRouteDistanceAndDuration({ from, to }) {
   try {
     const apiKey = process.env.ORS_API_KEY;
     if (!apiKey) throw new Error('Missing ORS API key');
 
-    // Log coordinates for debugging
-    console.log('Route request coordinates:', {
-      from: [from.lng, from.lat],
-      to: [to.lng, to.lat]
-    });
-
+    // Add coordinate snapping
     const response = await axios.post(
       'https://api.openrouteservice.org/v2/directions/driving-car',
       {
@@ -26,11 +53,8 @@ async function getRouteDistanceAndDuration({ from, to }) {
           [from.lng, from.lat],
           [to.lng, to.lat]
         ],
-        instructions: false,
-        elevation: false,
         options: {
-          avoid_features: ["ferries"], // Avoid non-drivable routes
-          vehicle_type: "car"
+          snapping_include_junctions: true
         }
       },
       {
@@ -38,22 +62,20 @@ async function getRouteDistanceAndDuration({ from, to }) {
           Authorization: apiKey,
           'Content-Type': 'application/json'
         },
-        timeout: 5000
+        timeout: 10000
       }
     );
 
-    // Handle empty features array
+    // Handle empty responses
     if (!response.data?.features?.length) {
-      console.error('ORS Empty Response:', response.data);
-      throw new Error('No route could be calculated between these points');
+      console.error('ORS Response:', response.data);
+      throw new Error('No drivable route found between locations');
     }
 
+    // Validate route structure
     const feature = response.data.features[0];
-    
-    // Handle missing segments
-    if (!feature.properties?.segments?.length) {
-      console.error('ORS Route Feature Structure:', feature);
-      throw new Error('Route exists but has no drivable segments');
+    if (!feature?.properties?.segments?.[0]?.distance) {
+      throw new Error('Invalid route data structure');
     }
 
     return {
@@ -63,18 +85,12 @@ async function getRouteDistanceAndDuration({ from, to }) {
 
   } catch (error) {
     // Handle specific ORS error codes
-    const orsErrorCode = error.response?.data?.error?.code;
-    const errorMap = {
-      2003: 'Start/end point not found',
-      2004: 'No route available',
-      2006: 'Too many coordinates'
-    };
-
-    throw new Error(
-      errorMap[orsErrorCode] || 
-      error.response?.data?.error?.message ||
-      `Routing failed: ${error.message}`
-    );
+    const orsError = error.response?.data?.error;
+    if (orsError?.code === 2004) {
+      throw new Error('No driving route available between these points');
+    }
+    
+    throw new Error(orsError?.message || error.message);
   }
 }
 
@@ -102,28 +118,37 @@ function calculatePriceRange(distanceMeters, durationSeconds, seats) {
 }
 
 // Change the function call in your POST route
-router.use('/calculate-price', (req, res, next) => {
-  const { from, to } = req.body;
-  
-  // Validate coordinate ranges for Ethiopia
-  const ETHIOPIA_BOUNDS = {
-    latMin: 3.397, latMax: 14.894,
-    lngMin: 32.997, lngMax: 47.989
-  };
+router.post('/calculate-price', authenticate, validateCoordinates, async (req, res) => {
+  try {
+    const { from, to, seats } = req.body;
+    
+    // Enhanced logging
+    console.log('Route calculation request:', { from, to });
 
-  const validatePoint = (point, name) => {
-    if (!point || typeof point.lat !== 'number' || typeof point.lng !== 'number') {
-      throw new Error(`Invalid ${name} coordinates format`);
-    }
-    if (point.lat < ETHIOPIA_BOUNDS.latMin || point.lat > ETHIOPIA_BOUNDS.latMax ||
-        point.lng < ETHIOPIA_BOUNDS.lngMin || point.lng > ETHIOPIA_BOUNDS.lngMax) {
-      throw new Error(`${name} coordinates outside Ethiopia`);
-    }
-  };
+    const { distance, duration } = await getRouteDistanceAndDuration(from, to);
+    
+    // Rest of your logic
+    const { minPrice, maxPrice, basePricePerSeat } = calculatePriceRange(
+      distance, 
+      duration, 
+      seats
+    );
 
-  validatePoint(from, 'from');
-  validatePoint(to, 'to');
-  next();
+    res.json({
+      min_price: minPrice,
+      max_price: maxPrice,
+      base_price: basePricePerSeat,
+      distance: distance / 1609.34,
+      duration: duration / 3600
+    });
+
+  } catch (error) {
+    console.error('Full calculation error:', error);
+    res.status(400).json({ 
+      error: error.message,
+      debug: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
+  }
 });
 
 async function cancelRide(rideId) {

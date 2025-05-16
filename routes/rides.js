@@ -13,33 +13,47 @@ async function getRouteDistanceAndDuration({ from, to }) {
     const apiKey = process.env.ORS_API_KEY;
     if (!apiKey) throw new Error('Missing ORS API key');
 
+    // Log coordinates for debugging
+    console.log('Route request coordinates:', {
+      from: [from.lng, from.lat],
+      to: [to.lng, to.lat]
+    });
+
     const response = await axios.post(
       'https://api.openrouteservice.org/v2/directions/driving-car',
       {
         coordinates: [
-          [from.lng, from.lat], // ORS uses [longitude, latitude] order
+          [from.lng, from.lat],
           [to.lng, to.lat]
         ],
         instructions: false,
-        elevation: false
+        elevation: false,
+        options: {
+          avoid_features: ["ferries"], // Avoid non-drivable routes
+          vehicle_type: "car"
+        }
       },
       {
         headers: {
           Authorization: apiKey,
           'Content-Type': 'application/json'
-        }
+        },
+        timeout: 5000
       }
     );
 
+    // Handle empty features array
     if (!response.data?.features?.length) {
-      console.error('ORS Response:', response.data);
-      throw new Error('No route features in response');
+      console.error('ORS Empty Response:', response.data);
+      throw new Error('No route could be calculated between these points');
     }
 
     const feature = response.data.features[0];
+    
+    // Handle missing segments
     if (!feature.properties?.segments?.length) {
-      console.error('Route Feature:', feature);
-      throw new Error('No segments in route feature');
+      console.error('ORS Route Feature Structure:', feature);
+      throw new Error('Route exists but has no drivable segments');
     }
 
     return {
@@ -48,16 +62,18 @@ async function getRouteDistanceAndDuration({ from, to }) {
     };
 
   } catch (error) {
-    console.error('Full ORS Error:', {
-      status: error.response?.status,
-      headers: error.response?.headers,
-      data: error.response?.data,
-      message: error.message
-    });
-    
+    // Handle specific ORS error codes
+    const orsErrorCode = error.response?.data?.error?.code;
+    const errorMap = {
+      2003: 'Start/end point not found',
+      2004: 'No route available',
+      2006: 'Too many coordinates'
+    };
+
     throw new Error(
-      error.response?.data?.error?.message || 
-      `Route calculation failed: ${error.message}`
+      errorMap[orsErrorCode] || 
+      error.response?.data?.error?.message ||
+      `Routing failed: ${error.message}`
     );
   }
 }
@@ -86,33 +102,28 @@ function calculatePriceRange(distanceMeters, durationSeconds, seats) {
 }
 
 // Change the function call in your POST route
-router.post('/calculate-price', authenticate, validateCoordinates, async (req, res) => {
-  try {
-    const { from, to, seats } = req.body;
-    
-    // Add this validation check
-    if (!from?.lat || !from?.lng || !to?.lat || !to?.lng) {
-      throw new Error("Invalid coordinates format");
+router.use('/calculate-price', (req, res, next) => {
+  const { from, to } = req.body;
+  
+  // Validate coordinate ranges for Ethiopia
+  const ETHIOPIA_BOUNDS = {
+    latMin: 3.397, latMax: 14.894,
+    lngMin: 32.997, lngMax: 47.989
+  };
+
+  const validatePoint = (point, name) => {
+    if (!point || typeof point.lat !== 'number' || typeof point.lng !== 'number') {
+      throw new Error(`Invalid ${name} coordinates format`);
     }
+    if (point.lat < ETHIOPIA_BOUNDS.latMin || point.lat > ETHIOPIA_BOUNDS.latMax ||
+        point.lng < ETHIOPIA_BOUNDS.lngMin || point.lng > ETHIOPIA_BOUNDS.lngMax) {
+      throw new Error(`${name} coordinates outside Ethiopia`);
+    }
+  };
 
-    // Pass the complete payload object
-    const { distance, duration } = await getRouteDistanceAndDuration({ from, to });
-    
-    // Rest of your code remains the same
-    const { minPrice, maxPrice, basePricePerSeat } = calculatePriceRange(
-      distance, duration, seats
-    );
-
-    res.json({
-      min_price: minPrice,
-      max_price: maxPrice,
-      base_price: basePricePerSeat,
-      distance: distance / 1609.34,
-      duration: duration / 3600
-    });
-  } catch (error) {
-    res.status(400).json({ error: error.message });
-  }
+  validatePoint(from, 'from');
+  validatePoint(to, 'to');
+  next();
 });
 
 async function cancelRide(rideId) {

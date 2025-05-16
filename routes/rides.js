@@ -206,7 +206,7 @@ router.post('/', authenticate, validateCoordinates, async (req, res) => {
       throw new Error('Departure time must be in the future');
     }
 
-    const { distance, duration } = await getRouteDistanceAndDuration(from, to);
+    const { distance, duration } = await getRouteDistanceAndDuration({ from, to });
     const { minPrice, maxPrice } = calculatePriceRange(distance, duration, seats);
     if (price_per_seat < minPrice || price_per_seat > maxPrice) {
       throw new Error(`Price must be between $${minPrice.toFixed(2)} and $${maxPrice.toFixed(2)}`);

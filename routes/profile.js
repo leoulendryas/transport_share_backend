@@ -5,7 +5,7 @@ const bcrypt = require('bcrypt');
 
 const router = express.Router();
 
-// GET user profile with more fields
+// GET current user's profile (authenticated)
 router.get('/', authenticate, async (req, res) => {
   try {
     const user = await query(
@@ -26,7 +26,30 @@ router.get('/', authenticate, async (req, res) => {
   }
 });
 
-// PUT to update user profile
+// GET any user's profile by userId param (authenticated)
+router.get('/:userId', authenticate, async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    const user = await query(
+      `SELECT id, email, first_name, last_name, phone_number, created_at, email_verified, phone_verified
+       FROM users 
+       WHERE id = $1`,
+      [userId]
+    );
+
+    if (user.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    res.json({ user: user.rows[0] });
+  } catch (error) {
+    console.error('Profile fetch error:', error);
+    res.status(500).json({ error: 'Failed to fetch profile' });
+  }
+});
+
+// PUT to update current user's profile
 router.put('/', authenticate, async (req, res) => {
   try {
     const { email, password, first_name, last_name, phone_number } = req.body;

@@ -301,8 +301,8 @@ router.get('/', paginate, async (req, res) => {
         r.brand_name,
         u.email as driver_email,
         (
-          SELECT json_agg(
-            json_build_object(
+          SELECT json_agg(data) FROM (
+            SELECT json_build_object(
               'id', u2.id,
               'email', u2.email,
               'first_name', u2.first_name,
@@ -313,11 +313,11 @@ router.get('/', paginate, async (req, res) => {
               'created_at', u2.created_at,
               'profile_image_url', u2.profile_image_url,
               'is_driver', ur.is_driver
-            )
-          )
-          FROM user_rides ur
-          JOIN users u2 ON ur.user_id = u2.id
-          WHERE ur.ride_id = r.id
+            ) as data
+            FROM user_rides ur
+            JOIN users u2 ON ur.user_id = u2.id
+            WHERE ur.ride_id = r.id
+          ) as participant_data
         ) as participants,
         ST_X(r.from_location::geometry) as from_lng,
         ST_Y(r.from_location::geometry) as from_lat,
@@ -348,38 +348,50 @@ router.get('/', paginate, async (req, res) => {
     params.push(req.query.limit, offset);
 
     const result = await client.query(queryText, params);
-    
-    // Parse locations for each ride
+
     const parsedRides = result.rows.map(ride => ({
       ...ride,
+      // Override from_lat/from_lng and to_lat/to_lng with parsed values to ensure consistency
       from_lat: parseLocation(ride.from_location)?.lat,
       from_lng: parseLocation(ride.from_location)?.lng,
       to_lat: parseLocation(ride.to_location)?.lat,
       to_lng: parseLocation(ride.to_location)?.lng,
-      participants: ride.participants || []
+      participants: (ride.participants || []).filter(p => p && p.id) // Filter nulls & invalids
     }));
 
-    const countResult = await client.query(
-      `SELECT COUNT(*) as total FROM rides r
-       WHERE r.status = 'active'
-         AND ST_DWithin(r.from_location::geography, ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography, $3)
-         AND ST_DWithin(r.to_location::geography, ST_SetSRID(ST_MakePoint($4, $5), 4326)::geography, $3)`,
-      [from_lng, from_lat, radius, to_lng, to_lat]
-    );
+    const countParams = [from_lng, from_lat, radius, to_lng, to_lat];
+    let countQuery = `
+      SELECT COUNT(*) as total 
+      FROM rides r
+      WHERE r.status = 'active'
+        AND ST_DWithin(r.from_location::geography, ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography, $3)
+        AND ST_DWithin(r.to_location::geography, ST_SetSRID(ST_MakePoint($4, $5), 4326)::geography, $3)
+    `;
+
+    if (company_id) {
+      countQuery += ` AND EXISTS (
+        SELECT 1 FROM ride_company_mapping rc WHERE rc.ride_id = r.id AND rc.company_id = $6
+      )`;
+      countParams.push(company_id);
+    }
+
+    const countResult = await client.query(countQuery, countParams);
 
     const response = {
       results: parsedRides,
       pagination: {
-        page: req.query.page,
-        limit: req.query.limit,
+        page: parseInt(req.query.page, 10),
+        limit: parseInt(req.query.limit, 10),
         total: parseInt(countResult.rows[0].total, 10)
       }
     };
 
     cache.set(cacheKey, response);
     res.json(response);
+
   } catch (error) {
-    res.status(500).json({ error: 'Failed to fetch rides' });
+    console.error('Error fetching rides:', error);
+    res.status(500).json({ error: 'Failed to fetch rides', details: error.message });
   } finally {
     client.release();
   }
@@ -394,27 +406,29 @@ router.get('/:id', authenticate, async (req, res) => {
     const rideResult = await client.query(
       `SELECT 
         r.*,
-        json_agg(
-          json_build_object(
-            'id', u.id,
-            'email', u.email,
-            'first_name', u.first_name,
-            'last_name', u.last_name,
-            'phone_number', u.phone_number,
-            'age', u.age,
-            'gender', u.gender,
-            'created_at', u.created_at,
-            'profile_image_url', u.profile_image_url,
-            'is_driver', ur.is_driver
+        (
+          SELECT json_agg(
+            json_build_object(
+              'id', u.id,
+              'email', u.email,
+              'first_name', u.first_name,
+              'last_name', u.last_name,
+              'phone_number', u.phone_number,
+              'age', u.age,
+              'gender', u.gender,
+              'created_at', u.created_at,
+              'profile_image_url', u.profile_image_url,
+              'is_driver', ur.is_driver
+            )
           )
+          FROM user_rides ur
+          JOIN users u ON ur.user_id = u.id
+          WHERE ur.ride_id = r.id
         ) as participants,
         EXISTS(SELECT 1 FROM user_rides WHERE ride_id = r.id AND user_id = $2) as is_participant,
         (r.driver_id = $2) as is_driver
       FROM rides r
-      LEFT JOIN user_rides ur ON r.id = ur.ride_id
-      LEFT JOIN users u ON ur.user_id = u.id
-      WHERE r.id = $1
-      GROUP BY r.id`,
+      WHERE r.id = $1`,
       [rideId, userId]
     );
 
@@ -423,14 +437,13 @@ router.get('/:id', authenticate, async (req, res) => {
     }
 
     const rideData = rideResult.rows[0];
-    
-    // Convert PostGIS geometry to lat/lng
+
     const fromLocation = parseLocation(rideData.from_location);
     const toLocation = parseLocation(rideData.to_location);
 
     const response = {
       ...rideData,
-      participants: rideData.participants.filter(p => p.id !== null), // Remove nulls
+      participants: rideData.participants?.filter(p => p.id !== null) || [],
       from_lat: fromLocation?.lat,
       from_lng: fromLocation?.lng,
       to_lat: toLocation?.lat,
@@ -472,7 +485,7 @@ router.get('/user/active-rides', authenticate, paginate, async (req, res) => {
     const offset = (req.query.page - 1) * req.query.limit;
 
     const queryText = `
-      SELECT DISTINCT
+      SELECT DISTINCT ON (r.id)
         r.id,
         r.driver_id,
         r.price_per_seat,
@@ -520,13 +533,12 @@ router.get('/user/active-rides', authenticate, paginate, async (req, res) => {
       WHERE ur.user_id = $1
         AND r.status IN ('active', 'full')
         AND (r.departure_time IS NULL OR r.departure_time > NOW())
-      ORDER BY r.departure_time ASC
+      ORDER BY r.id, r.departure_time ASC
       LIMIT $2 OFFSET $3
     `;
 
     const result = await client.query(queryText, [userId, req.query.limit, offset]);
-    
-    // Parse locations for each ride
+
     const parsedRides = result.rows.map(ride => ({
       ...ride,
       from_lat: parseLocation(ride.from_location)?.lat,

@@ -720,4 +720,165 @@ router.post('/:id/cancel', authenticate, async (req, res) => {
   }
 });
 
+router.post('/:id/remove-user', authenticate, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const rideId = req.params.id;
+    const userIdToRemove = req.body.userId;
+    const driverId = req.user.id;
+
+    // Verify ride exists and requester is driver
+    const rideCheck = await client.query(
+      'SELECT driver_id, status FROM rides WHERE id = $1',
+      [rideId]
+    );
+    if (rideCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Ride not found' });
+    }
+    if (rideCheck.rows[0].driver_id !== driverId) {
+      return res.status(403).json({ error: 'Only the driver can remove users' });
+    }
+
+    // Prevent modifying completed/cancelled rides
+    if (['completed', 'cancelled'].includes(rideCheck.rows[0].status)) {
+      return res.status(400).json({ error: 'Cannot modify completed/cancelled ride' });
+    }
+
+    // Verify user exists in ride and is not driver
+    const userCheck = await client.query(
+      `SELECT 1 FROM user_rides 
+       WHERE ride_id = $1 AND user_id = $2 AND is_driver = false`,
+      [rideId, userIdToRemove]
+    );
+    if (userCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found in ride or is driver' });
+    }
+
+    // Remove user from ride
+    await client.query(
+      'DELETE FROM user_rides WHERE ride_id = $1 AND user_id = $2',
+      [rideId, userIdToRemove]
+    );
+
+    // Update available seats
+    await client.query(
+      'UPDATE rides SET seats_available = seats_available + 1 WHERE id = $1',
+      [rideId]
+    );
+
+    // Re-activate ride if it was full
+    await client.query(
+      `UPDATE rides SET status = 'active' 
+       WHERE id = $1 AND status = 'full'`,
+      [rideId]
+    );
+
+    await client.query('COMMIT');
+
+    // Notify participants via WebSocket
+    const clients = rideConnections.get(rideId);
+    if (clients) {
+      clients.forEach(client => {
+        if (client.readyState === WebSocket.OPEN) {
+          client.send(JSON.stringify({
+            type: 'user_removed',
+            ride_id: rideId,
+            user_id: userIdToRemove,
+            timestamp: new Date().toISOString()
+          }));
+        }
+      });
+    }
+
+    res.json({ message: 'User removed successfully' });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: error.message });
+  } finally {
+    client.release();
+  }
+});
+
+// Endpoint to update ride status (ongoing/completed)
+router.put('/:id/status', authenticate, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const rideId = req.params.id;
+    const { status } = req.body;
+    const userId = req.user.id;
+
+    // Validate new status
+    if (!['ongoing', 'completed'].includes(status)) {
+      return res.status(400).json({ error: 'Invalid status' });
+    }
+
+    // Verify user is part of the ride
+    const participantCheck = await client.query(
+      `SELECT 1 FROM user_rides WHERE ride_id = $1 AND user_id = $2`,
+      [rideId, userId]
+    );
+    if (participantCheck.rows.length === 0) {
+      return res.status(403).json({ error: 'User not part of this ride' });
+    }
+
+    // Get current ride status with lock
+    const rideResult = await client.query(
+      'SELECT status, driver_id FROM rides WHERE id = $1 FOR UPDATE',
+      [rideId]
+    );
+    if (rideResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Ride not found' });
+    }
+
+    const currentStatus = rideResult.rows[0].status;
+    const isDriver = rideResult.rows[0].driver_id === userId;
+
+    // Validate status transitions
+    if (status === 'ongoing') {
+      if (!isDriver) {
+        return res.status(403).json({ error: 'Only driver can start the ride' });
+      }
+      if (!['active', 'full'].includes(currentStatus)) {
+        return res.status(400).json({ error: 'Ride must be active/full to start' });
+      }
+    } else if (status === 'completed') {
+      if (currentStatus !== 'ongoing') {
+        return res.status(400).json({ error: 'Ride must be ongoing to complete' });
+      }
+    }
+
+    // Update ride status
+    await client.query(
+      'UPDATE rides SET status = $1 WHERE id = $2',
+      [status, rideId]
+    );
+
+    await client.query('COMMIT');
+
+    // Notify participants via WebSocket
+    const clients = rideConnections.get(rideId);
+    if (clients) {
+      clients.forEach(client => {
+        if (client.readyState === WebSocket.OPEN) {
+          client.send(JSON.stringify({
+            type: 'status_update',
+            ride_id: rideId,
+            new_status: status,
+            timestamp: new Date().toISOString()
+          }));
+        }
+      });
+    }
+
+    res.json({ message: 'Ride status updated successfully' });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: error.message });
+  } finally {
+    client.release();
+  }
+});
+
 module.exports = router;

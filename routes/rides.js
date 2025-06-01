@@ -25,7 +25,7 @@ async function getRouteDistanceAndDuration({ from, to }) {
     url.searchParams.append('origin', `${from.lat},${from.lng}`);
     url.searchParams.append('destination', `${to.lat},${to.lng}`);
     url.searchParams.append('apiKey', apiKey);
-    url.searchParams.append('instruction', '0');
+    url.searchParams.append('instruction', '0');  // Exclude turn-by-turn instructions
 
     const response = await axios.get(url.toString(), {
       timeout: 5000,
@@ -33,6 +33,10 @@ async function getRouteDistanceAndDuration({ from, to }) {
       validateStatus: (status) => status < 500
     });
 
+    // Log the actual response for debugging
+    console.log('Gebeta API Response:', JSON.stringify(response.data, null, 2));
+
+    // Handle Gebeta-specific error responses
     if (response.data?.status_code && response.data.status_code !== 200) {
       const errorCode = response.data.status_code;
       const errorMessages = {
@@ -43,24 +47,32 @@ async function getRouteDistanceAndDuration({ from, to }) {
       throw new Error(errorMessages[errorCode] || `Routing failed (${errorCode})`);
     }
 
+    // Extract summary from response - this is the correct structure
     const summary = response.data.summary;
 
+    // Validate the summary object
     if (!summary || typeof summary.distance !== 'number' || typeof summary.time !== 'number') {
-      console.error('Invalid route data structure:', response.data);
-      throw new Error('Invalid route data in response');
+      throw new Error('Invalid route summary in response');
     }
 
     return {
-      distance: summary.distance,  // meters
-      duration: summary.time       // seconds
+      distance: summary.distance,  // in meters
+      duration: summary.time        // in seconds
     };
 
   } catch (error) {
     console.error('Gebeta Maps Error:', error.message);
-    const errorMessage = error.response?.data?.message 
-      ? `Routing failed: ${error.response.data.message}`
-      : error.message;
-    throw new Error(errorMessage);
+    
+    // Enhanced error details
+    let errorMessage = error.message;
+    if (error.response) {
+      errorMessage += ` | Status: ${error.response.status}`;
+      if (error.response.data) {
+        errorMessage += ` | Data: ${JSON.stringify(error.response.data)}`;
+      }
+    }
+    
+    throw new Error(`Routing failed: ${errorMessage}`);
   }
 }
 

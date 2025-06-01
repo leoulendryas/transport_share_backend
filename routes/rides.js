@@ -153,12 +153,12 @@ router.post('/calculate-price', authenticate, validateCoordinatesForPrice, async
 
     // Format response
     res.json({
-      min_price: minPrice.toFixed(2),
-      max_price: maxPrice.toFixed(2),
-      base_price: basePricePerSeat.toFixed(2),
-      distance: (distance / 1000).toFixed(1),
-      duration: Math.ceil(duration / 60)
-    });
+      min_price: +minPrice.toFixed(2),            // ensures it's a number with two decimals
+      max_price: +maxPrice.toFixed(2),
+      base_price: +basePricePerSeat.toFixed(2),
+      distance: +(distance / 1000).toFixed(1),     // convert meters to km as number
+      duration: Math.ceil(duration / 60)           // minutes as integer
+    });    
 
   } catch (error) {
     console.error(`Pricing Error: ${error.message}`);

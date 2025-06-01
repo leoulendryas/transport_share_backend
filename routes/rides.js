@@ -67,6 +67,15 @@ async function getRouteDistanceAndDuration({ from, to }) {
   }
 }
 
+function isValidEthiopianLocation({ lat, lng }) {
+  const latMin = 3.4;
+  const latMax = 14.9;
+  const lngMin = 32.9;
+  const lngMax = 48.0;
+
+  return lat >= latMin && lat <= latMax && lng >= lngMin && lng <= lngMax;
+}
+
 // Enhanced price calculation with real-world factors
 function calculatePriceRange(distanceMeters, durationSeconds, seats) {
   const BASE_RATE = 19.5; // ETB per km

@@ -10,97 +10,140 @@ const router = express.Router();
 
 async function getRouteDistanceAndDuration({ from, to }) {
   try {
-    const apiKey = process.env.GRAPHHOPPER_API_KEY;
-    if (!apiKey) throw new Error('Missing GraphHopper API key');
-
-    const url = `https://graphhopper.com/api/1/route?point=${from.lat},${from.lng}&point=${to.lat},${to.lng}&vehicle=car&locale=en&key=${apiKey}`;
-
-    const response = await axios.get(url);
-
-    if (response.data?.paths?.length === 0) {
-      throw new Error('No route found between points');
+    // Enhanced coordinate validation
+    if (!from || !to || 
+        typeof from.lat !== 'number' || typeof from.lng !== 'number' ||
+        typeof to.lat !== 'number' || typeof to.lng !== 'number') {
+      throw new Error('Invalid coordinate format. Expected {lat: number, lng: number}');
     }
 
-    const path = response.data.paths[0];
-    return {
-      distance: path.distance, // meters
-      duration: path.time / 1000 // convert ms to seconds
-    };
+    const apiKey = process.env.GEBETA_API_KEY;
+    if (!apiKey) throw new Error('Gebeta Maps API key not configured');
 
-  } catch (error) {
-    console.error('GraphHopper Error:', {
-      status: error.response?.status,
-      data: error.response?.data,
-      message: error.message
+    // Construct API URL with validation
+    const url = new URL('https://mapapi.gebeta.app/api/route/direction/');
+    url.searchParams.append('origin', `${from.lat},${from.lng}`);
+    url.searchParams.append('destination', `${to.lat},${to.lng}`);
+    url.searchParams.append('apiKey', apiKey);
+    url.searchParams.append('instruction', '0');
+
+    const response = await axios.get(url.toString(), {
+      timeout: 5000,
+      headers: { 'Accept': 'application/json' },
+      validateStatus: (status) => status < 500 // Don't throw for 4xx errors
     });
 
-    throw new Error(
-      error.response?.data?.message ||
-      `Routing failed: ${error.message}`
-    );
+    // Handle API errors first
+    if (response.data?.status_code && response.data.status_code !== 200) {
+      const errorCode = response.data.status_code;
+      const errorMessages = {
+        404: 'No route found between locations',
+        401: 'Invalid or expired API key',
+        422: 'Invalid input parameters'
+      };
+      throw new Error(errorMessages[errorCode] || `Routing failed (${errorCode})`);
+    }
+
+    // Extract route data with fallbacks
+    const routeData = response.data.routes?.[0] || response.data;
+    const distance = routeData.distance;
+    const duration = routeData.duration;
+
+    if (typeof distance !== 'number' || typeof duration !== 'number') {
+      throw new Error('Invalid route data in response');
+    }
+
+    return { distance, duration };
+
+  } catch (error) {
+    console.error('Gebeta Maps Error:', error.message);
+    
+    // Preserve original error context
+    const errorMessage = error.response?.data?.message 
+      ? `Routing failed: ${error.response.data.message}`
+      : error.message;
+
+    throw new Error(errorMessage);
   }
 }
 
+// Enhanced price calculation with real-world factors
 function calculatePriceRange(distanceMeters, durationSeconds, seats) {
-  const fuelPricePerGallon = 384.11; // ETB
-  const mpg = 25; // miles per gallon
-  const maintenancePerMile = 10.90; // ETB per mile
-  const hourlyRate = 545; // ETB per hour
-
-  const distanceMiles = distanceMeters / 1609.34;
-  const durationHours = durationSeconds / 3600;
-
-  const fuelCost = (distanceMiles / mpg) * fuelPricePerGallon;
-  const maintenanceCost = distanceMiles * maintenancePerMile;
-  const timeCost = durationHours * hourlyRate;
-
-  const totalCost = fuelCost + maintenanceCost + timeCost;
-  const basePricePerSeat = totalCost / seats;
-
+  const BASE_RATE = 19.5; // ETB per km
+  const TIME_RATE = 3; // ETB per minute
+  const FUEL_PRICE = 122.53; // ETB per liter
+  const FUEL_EFFICIENCY = 12.3; // km per liter
+  const SERVICE_FEE_RATE = 0.15;
+  const SEAT_UTILIZATION_FACTOR = 0.7;
+  
+  const distanceKm = distanceMeters / 1000;
+  const durationMinutes = durationSeconds / 60;
+  
+  // Base calculation
+  const distanceCost = distanceKm * BASE_RATE;
+  const timeCost = durationMinutes * TIME_RATE;
+  
+  // Fuel cost calculation
+  const fuelCost = (distanceKm / FUEL_EFFICIENCY) * FUEL_PRICE;
+  
+  // Total cost components
+  const operationalCost = fuelCost + (distanceCost * 0.3);
+  const serviceFee = (distanceCost + timeCost) * SERVICE_FEE_RATE;
+  
+  // Per-seat pricing
+  const basePricePerSeat = (distanceCost + timeCost + operationalCost + serviceFee) / 
+                          (seats * SEAT_UTILIZATION_FACTOR);
+  
+  // Dynamic pricing range
   return {
-    minPrice: basePricePerSeat * 0.9,
-    maxPrice: basePricePerSeat * 1.3,
+    minPrice: basePricePerSeat * 0.85,
+    maxPrice: basePricePerSeat * 1.25,
     basePricePerSeat
   };
 }
 
-// Change the function call in your POST route
-function isValidEthiopianLocation({ lat, lng }) {
-  const latMin = 3.4;
-  const latMax = 14.9;
-  const lngMin = 32.9;
-  const lngMax = 48.0;
-
-  return lat >= latMin && lat <= latMax && lng >= lngMin && lng <= lngMax;
-}
-
+// Route handler with improved validation
 router.post('/calculate-price', authenticate, validateCoordinatesForPrice, async (req, res) => {
   try {
-    console.log('GraphHopper API Key:', process.env.GRAPHHOPPER_API_KEY);
+    const { from, to, seats = 1 } = req.body;
 
-    const { from, to, seats } = req.body;
-
-    if (!isValidEthiopianLocation(from) || !isValidEthiopianLocation(to)) {
-      return res.status(400).json({ error: 'Locations must be within Ethiopia' });
+    // Validate seats
+    if (!Number.isInteger(seats) || seats < 1 || seats > 8) {
+      return res.status(400).json({ error: 'Invalid seat count (1-8)' });
     }
 
+    // Enhanced location validation
+    if (!isValidEthiopianLocation(from) || !isValidEthiopianLocation(to)) {
+      return res.status(400).json({ error: 'Both locations must be within Ethiopia' });
+    }
+
+    // Get route data
     const { distance, duration } = await getRouteDistanceAndDuration({ from, to });
 
-    const { minPrice, maxPrice, basePricePerSeat } = calculatePriceRange(distance, duration, seats);
+    // Validate route metrics
+    if (distance < 100 || duration < 10) {
+      return res.status(400).json({ error: 'Route too short for pricing' });
+    }
 
+    // Calculate pricing
+    const { minPrice, maxPrice, basePricePerSeat } = calculatePriceRange(
+      distance, 
+      duration, 
+      seats
+    );
+
+    // Format response
     res.json({
-      min_price: minPrice,
-      max_price: maxPrice,
-      base_price: basePricePerSeat,
-      distance: distance / 1000,
-      duration: duration / 60
+      min_price: minPrice.toFixed(2),
+      max_price: maxPrice.toFixed(2),
+      base_price: basePricePerSeat.toFixed(2),
+      distance: (distance / 1000).toFixed(1),
+      duration: Math.ceil(duration / 60)
     });
 
   } catch (error) {
-    res.status(400).json({
-      error: error.message,
-      code: error.response?.data?.hints?.[0]?.details
-    });
+    console.error(`Pricing Error: ${error.message}`);
+    res.status(400).json({ error: error.message });
   }
 });
 

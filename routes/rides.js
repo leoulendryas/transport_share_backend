@@ -10,9 +10,11 @@ const router = express.Router();
 
 async function getRouteDistanceAndDuration({ from, to }) {
   try {
-    if (!from || !to || 
-        typeof from.lat !== 'number' || typeof from.lng !== 'number' ||
-        typeof to.lat !== 'number' || typeof to.lng !== 'number') {
+    if (
+      !from || !to ||
+      typeof from.lat !== 'number' || typeof from.lng !== 'number' ||
+      typeof to.lat !== 'number' || typeof to.lng !== 'number'
+    ) {
       throw new Error('Invalid coordinate format. Expected {lat: number, lng: number}');
     }
 
@@ -41,14 +43,17 @@ async function getRouteDistanceAndDuration({ from, to }) {
       throw new Error(errorMessages[errorCode] || `Routing failed (${errorCode})`);
     }
 
-    const routeData = response.data.routes?.[0] || response.data;
-    const { distance, duration } = routeData;
+    const summary = response.data.summary;
 
-    if (typeof distance !== 'number' || typeof duration !== 'number') {
+    if (!summary || typeof summary.distance !== 'number' || typeof summary.time !== 'number') {
+      console.error('Invalid route data structure:', response.data);
       throw new Error('Invalid route data in response');
     }
 
-    return { distance, duration };
+    return {
+      distance: summary.distance,  // meters
+      duration: summary.time       // seconds
+    };
 
   } catch (error) {
     console.error('Gebeta Maps Error:', error.message);

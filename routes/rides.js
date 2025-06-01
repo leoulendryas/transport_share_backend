@@ -8,62 +8,53 @@ const WebSocket = require('ws');
 
 const router = express.Router();
 
-async function getRouteDistanceAndDuration({ from, to, waypoints = [], instruction = false }) {
+async function getRouteDistanceAndDuration({ from, to }) {
   try {
-    // Validate coordinates
-    if (!from || !to ||
-      typeof from.lat !== 'number' || typeof from.lng !== 'number' ||
-      typeof to.lat !== 'number' || typeof to.lng !== 'number') {
+    if (!from || !to || 
+        typeof from.lat !== 'number' || typeof from.lng !== 'number' ||
+        typeof to.lat !== 'number' || typeof to.lng !== 'number') {
       throw new Error('Invalid coordinate format. Expected {lat: number, lng: number}');
     }
 
     const apiKey = process.env.GEBETA_API_KEY;
     if (!apiKey) throw new Error('Gebeta Maps API key not configured');
 
-    // Construct URL manually per Gebeta API format
-    let url = `https://mapapi.gebeta.app/api/route/direction/?origin=${from.lat},${from.lng}&destination=${to.lat},${to.lng}`;
+    const url = new URL('https://mapapi.gebeta.app/api/route/direction/');
+    url.searchParams.append('origin', `${from.lat},${from.lng}`);
+    url.searchParams.append('destination', `${to.lat},${to.lng}`);
+    url.searchParams.append('apiKey', apiKey);
+    url.searchParams.append('instruction', '0');
 
-    if (Array.isArray(waypoints) && waypoints.length > 0) {
-      const waypointsString = waypoints.map(wp => `${wp.lat},${wp.lng}`).join(';');
-      url += `&waypoints=${encodeURIComponent(waypointsString)}`;
-    }
-
-    url += `&instruction=${instruction ? '1' : '0'}`;
-    url += `&apiKey=${apiKey}`;
-
-    const response = await axios.get(url, {
+    const response = await axios.get(url.toString(), {
       timeout: 5000,
       headers: { 'Accept': 'application/json' },
-      validateStatus: status => status < 500
+      validateStatus: (status) => status < 500
     });
 
-    const { status_code, routes } = response.data;
-
-    if (status_code !== 200) {
+    if (response.data?.status_code && response.data.status_code !== 200) {
+      const errorCode = response.data.status_code;
       const errorMessages = {
         404: 'No route found between locations',
         401: 'Invalid or expired API key',
         422: 'Invalid input parameters'
       };
-      throw new Error(errorMessages[status_code] || `Routing failed (${status_code})`);
+      throw new Error(errorMessages[errorCode] || `Routing failed (${errorCode})`);
     }
 
-    const route = routes?.[0];
-    const distance = route?.distance;
-    const duration = route?.duration;
+    const routeData = response.data.routes?.[0] || response.data;
+    const { distance, duration } = routeData;
 
     if (typeof distance !== 'number' || typeof duration !== 'number') {
-      throw new Error('Invalid route data received from API');
+      throw new Error('Invalid route data in response');
     }
 
     return { distance, duration };
+
   } catch (error) {
     console.error('Gebeta Maps Error:', error.message);
-
-    const errorMessage = error.response?.data?.message
+    const errorMessage = error.response?.data?.message 
       ? `Routing failed: ${error.response.data.message}`
       : error.message;
-
     throw new Error(errorMessage);
   }
 }

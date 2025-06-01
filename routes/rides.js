@@ -25,7 +25,7 @@ async function getRouteDistanceAndDuration({ from, to }) {
     url.searchParams.append('origin', `${from.lat},${from.lng}`);
     url.searchParams.append('destination', `${to.lat},${to.lng}`);
     url.searchParams.append('apiKey', apiKey);
-    url.searchParams.append('instruction', '0');  // Exclude turn-by-turn instructions
+    url.searchParams.append('instruction', '0');
 
     const response = await axios.get(url.toString(), {
       timeout: 5000,
@@ -47,17 +47,18 @@ async function getRouteDistanceAndDuration({ from, to }) {
       throw new Error(errorMessages[errorCode] || `Routing failed (${errorCode})`);
     }
 
-    // Extract summary from response - this is the correct structure
-    const summary = response.data.summary;
+    // Extract distance and duration from the actual response structure
+    const totalDistance = response.data.totalDistance;
+    const timeTaken = response.data.timetaken;
 
-    // Validate the summary object
-    if (!summary || typeof summary.distance !== 'number' || typeof summary.time !== 'number') {
-      throw new Error('Invalid route summary in response');
+    // Validate the values
+    if (typeof totalDistance !== 'number' || typeof timeTaken !== 'number') {
+      throw new Error('Invalid route data in response');
     }
 
     return {
-      distance: summary.distance,  // in meters
-      duration: summary.time        // in seconds
+      distance: totalDistance,  // in meters
+      duration: timeTaken       // in seconds
     };
 
   } catch (error) {

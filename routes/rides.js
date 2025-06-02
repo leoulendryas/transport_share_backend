@@ -418,7 +418,9 @@ router.get('/', paginate, async (req, res) => {
       from_lng: parseLocation(ride.from_location)?.lng,
       to_lat: parseLocation(ride.to_location)?.lat,
       to_lng: parseLocation(ride.to_location)?.lng,
-      participants: (ride.participants || []).filter(p => p && p.id) // Filter nulls & invalids
+      participants: (ride.participants || []).filter(p => p && p.id), // Filter nulls & invalids
+      is_driver: ride.participants?.some(p => p.id === req.user?.id && p.is_driver) || false
+
     }));
 
     const countParams = [from_lng, from_lat, radius, to_lng, to_lat];

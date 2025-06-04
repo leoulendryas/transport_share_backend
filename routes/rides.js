@@ -669,7 +669,6 @@ router.post('/:id/join', authenticate, async (req, res) => {
     const rideId = req.params.id;
     const userId = req.user.id;
 
-    // Check if user already joined
     const existingCheck = await client.query(
       'SELECT 1 FROM user_rides WHERE user_id = $1 AND ride_id = $2',
       [userId, rideId]
@@ -679,7 +678,6 @@ router.post('/:id/join', authenticate, async (req, res) => {
       throw new Error('User already joined this ride');
     }
 
-    // Get ride details with lock
     const ride = await client.query(
       `SELECT status, seats_available, departure_time 
        FROM rides WHERE id = $1 FOR UPDATE`,
@@ -692,7 +690,6 @@ router.post('/:id/join', authenticate, async (req, res) => {
 
     const rideData = ride.rows[0];
 
-    // Validate ride conditions
     if (rideData.departure_time && new Date(rideData.departure_time) < new Date()) {
       throw new Error('Cannot join a ride that has already departed');
     }
@@ -705,29 +702,22 @@ router.post('/:id/join', authenticate, async (req, res) => {
       throw new Error('Ride is full');
     }
 
-    // Update seats and get updated values
     const updateResult = await client.query(
       `UPDATE rides 
-       SET seats_available = seats_available - 1 
-       WHERE id = $1
-       RETURNING seats_available, status`,
+       SET 
+         seats_available = seats_available - 1,
+         status = CASE 
+                    WHEN seats_available = 1 AND status = 'active' THEN 'ongoing'
+                    ELSE status
+                  END
+       WHERE id = $1 
+       RETURNING status`,
       [rideId]
     );
-    
-    const newSeatsAvailable = updateResult.rows[0].seats_available;
-    const currentStatus = updateResult.rows[0].status;
 
-    // AUTO-STATUS CHANGE: Set to ongoing when ride becomes full
-    let statusChanged = false;
-    if (newSeatsAvailable === 0 && currentStatus === 'active') {
-      await client.query(
-        `UPDATE rides SET status = 'ongoing' WHERE id = $1`,
-        [rideId]
-      );
-      statusChanged = true;
-    }
+    const newStatus = updateResult.rows[0].status;
+    const wasActivated = (rideData.status === 'active' && newStatus === 'ongoing');
 
-    // Create user-ride association
     await client.query(
       'INSERT INTO user_rides (user_id, ride_id) VALUES ($1, $2)',
       [userId, rideId]
@@ -735,21 +725,18 @@ router.post('/:id/join', authenticate, async (req, res) => {
 
     await client.query('COMMIT');
     
-    // Notify WebSocket clients
     const clients = rideConnections.get(rideId);
     if (clients) {
       clients.forEach(client => {
         if (client.readyState === WebSocket.OPEN) {
-          // Participant joined notification
           client.send(JSON.stringify({
             type: 'participant_joined',
             user_id: userId,
             ride_id: rideId,
             timestamp: new Date().toISOString()
           }));
-
-          // Additional status update notification
-          if (statusChanged) {
+          
+          if (wasActivated) {
             client.send(JSON.stringify({
               type: 'status_update',
               ride_id: rideId,
@@ -778,7 +765,6 @@ router.post('/:id/leave', authenticate, async (req, res) => {
     const rideId = req.params.id;
     const userId = req.user.id;
 
-    // Check ride status first
     const rideStatusCheck = await client.query(
       `SELECT status FROM rides WHERE id = $1 FOR UPDATE`,
       [rideId]
@@ -812,7 +798,6 @@ router.post('/:id/leave', authenticate, async (req, res) => {
       [userId, rideId]
     );
 
-    // Update seats only (no status reversion)
     await client.query(
       'UPDATE rides SET seats_available = seats_available + 1 WHERE id = $1',
       [rideId]
@@ -820,7 +805,6 @@ router.post('/:id/leave', authenticate, async (req, res) => {
 
     await client.query('COMMIT');
     
-    // WebSocket notification
     const clients = rideConnections.get(rideId);
     if (clients) {
       clients.forEach(client => {
@@ -988,12 +972,10 @@ router.put('/:id/status', authenticate, async (req, res) => {
     const { status } = req.body;
     const userId = req.user.id;
 
-    // Validate new status
     if (!['ongoing', 'completed'].includes(status)) {
       return res.status(400).json({ error: 'Invalid status' });
     }
 
-    // Verify user is part of the ride
     const participantCheck = await client.query(
       `SELECT 1 FROM user_rides WHERE ride_id = $1 AND user_id = $2`,
       [rideId, userId]
@@ -1002,7 +984,6 @@ router.put('/:id/status', authenticate, async (req, res) => {
       return res.status(403).json({ error: 'User not part of this ride' });
     }
 
-    // Get current ride status with lock
     const rideResult = await client.query(
       'SELECT status, driver_id FROM rides WHERE id = $1 FOR UPDATE',
       [rideId]
@@ -1014,22 +995,19 @@ router.put('/:id/status', authenticate, async (req, res) => {
     const currentStatus = rideResult.rows[0].status;
     const isDriver = rideResult.rows[0].driver_id === userId;
 
-    // Validate status transitions
     if (status === 'ongoing') {
       if (!isDriver) {
         return res.status(403).json({ error: 'Only driver can start the ride' });
       }
-      // Allow transition from 'active' OR automatic 'full' state
-      if (!['active', 'full'].includes(currentStatus)) {
-        return res.status(400).json({ error: 'Ride must be active/full to start' });
+      if (currentStatus !== 'active') {
+        return res.status(400).json({ error: 'Ride must be active to start' });
       }
     } else if (status === 'completed') {
-      if (currentStatus !== 'ongoing') {
-        return res.status(400).json({ error: 'Ride must be ongoing to complete' });
+      if (!['ongoing', 'active'].includes(currentStatus)) {
+        return res.status(400).json({ error: 'Ride must be ongoing or active to complete' });
       }
     }
 
-    // Update ride status
     await client.query(
       'UPDATE rides SET status = $1 WHERE id = $2',
       [status, rideId]
@@ -1037,7 +1015,6 @@ router.put('/:id/status', authenticate, async (req, res) => {
 
     await client.query('COMMIT');
 
-    // Notify participants via WebSocket
     const clients = rideConnections.get(rideId);
     if (clients) {
       clients.forEach(client => {

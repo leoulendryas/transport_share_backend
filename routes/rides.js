@@ -984,8 +984,11 @@ router.put('/:id/status', authenticate, async (req, res) => {
         return res.status(400).json({ error: 'Ride must be active/full to start' });
       }
     } else if (status === 'completed') {
-      if (currentStatus !== 'ongoing') {
-        return res.status(400).json({ error: 'Ride must be ongoing to complete' });
+      if (!isDriver) {
+        return res.status(403).json({ error: 'Only driver can complete the ride' });
+      }
+      if (!['ongoing', 'active'].includes(currentStatus)) {
+        return res.status(400).json({ error: 'Ride must be ongoing or active to complete' });
       }
     }
 

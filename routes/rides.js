@@ -1021,4 +1021,281 @@ router.put('/:id/status', authenticate, async (req, res) => {
   }
 });
 
+// routes/rides.js
+// Add after other endpoints
+
+// Endpoint for driver to mark ride as completed
+router.post('/:id/complete', authenticate, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const rideId = req.params.id;
+    const driverId = req.user.id;
+
+    // Verify driver owns the ride
+    const rideResult = await client.query(
+      'SELECT id, status FROM rides WHERE id = $1 AND driver_id = $2',
+      [rideId, driverId]
+    );
+    
+    if (rideResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Ride not found or unauthorized' });
+    }
+
+    const ride = rideResult.rows[0];
+    
+    // Validate ride status
+    if (ride.status !== 'ongoing') {
+      return res.status(400).json({ error: 'Ride must be ongoing to complete' });
+    }
+
+    // Update ride status to pending-completion
+    await client.query(
+      'UPDATE rides SET status = $1 WHERE id = $2',
+      ['pending-completion', rideId]
+    );
+
+    // Create completion verification requests for passengers
+    const passengers = await client.query(
+      `SELECT user_id FROM user_rides 
+       WHERE ride_id = $1 AND is_driver = false`,
+      [rideId]
+    );
+
+    for (const passenger of passengers.rows) {
+      await client.query(
+        `INSERT INTO ride_completion_verifications 
+         (ride_id, user_id, status) 
+         VALUES ($1, $2, 'pending')`,
+        [rideId, passenger.user_id]
+      );
+    }
+
+    await client.query('COMMIT');
+
+    // Notify passengers via WebSocket
+    const clients = rideConnections.get(rideId);
+    if (clients) {
+      clients.forEach(client => {
+        if (client.readyState === WebSocket.OPEN) {
+          client.send(JSON.stringify({
+            type: 'completion_verification',
+            ride_id: rideId,
+            message: 'Driver marked ride as completed. Please confirm.',
+            timestamp: new Date().toISOString()
+          }));
+        }
+      });
+    }
+
+    // TODO: Send push notifications to passengers
+    // notificationService.sendCompletionVerification(rideId);
+
+    res.json({ 
+      message: 'Completion pending passenger verification',
+      passengers: passengers.rows.map(p => p.user_id)
+    });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: error.message });
+  } finally {
+    client.release();
+  }
+});
+
+// Endpoint for passengers to verify completion
+router.post('/:id/verify-completion', authenticate, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const rideId = req.params.id;
+    const userId = req.user.id;
+    const { status } = req.body; // 'confirmed' or 'disputed'
+
+    // Verify user is a passenger
+    const verification = await client.query(
+      `SELECT id FROM ride_completion_verifications 
+       WHERE ride_id = $1 AND user_id = $2 AND status = 'pending'`,
+      [rideId, userId]
+    );
+
+    if (verification.rows.length === 0) {
+      return res.status(404).json({ error: 'Verification request not found' });
+    }
+
+    // Update verification status
+    await client.query(
+      `UPDATE ride_completion_verifications 
+       SET status = $1, verified_at = NOW() 
+       WHERE ride_id = $2 AND user_id = $3`,
+      [status, rideId, userId]
+    );
+
+    await client.query('COMMIT');
+
+    // Check if all verifications are complete
+    const pendingCount = await client.query(
+      `SELECT COUNT(*) 
+       FROM ride_completion_verifications 
+       WHERE ride_id = $1 AND status = 'pending'`,
+      [rideId]
+    );
+
+    if (pendingCount.rows[0].count === '0') {
+      finalizeRideCompletion(rideId);
+    }
+
+    res.json({ message: `Verification ${status} recorded` });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: error.message });
+  } finally {
+    client.release();
+  }
+});
+
+// Helper function to finalize ride completion
+async function finalizeRideCompletion(rideId) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    
+    // Check verification statuses
+    const verifications = await client.query(
+      `SELECT status FROM ride_completion_verifications 
+       WHERE ride_id = $1`,
+      [rideId]
+    );
+
+    const hasDispute = verifications.rows.some(v => v.status === 'disputed');
+    
+    if (hasDispute) {
+      // Handle dispute
+      await client.query(
+        `UPDATE rides SET status = 'disputed' WHERE id = $1`,
+        [rideId]
+      );
+      // TODO: Initiate dispute resolution process
+    } else {
+      // Complete ride and release payment
+      await client.query(
+        `UPDATE rides SET status = 'completed', completed_at = NOW() 
+         WHERE id = $1`,
+        [rideId]
+      );
+      
+      // TODO: Trigger payment release to driver
+      // paymentService.releasePayment(rideId);
+    }
+
+    await client.query('COMMIT');
+    
+    // Notify all participants
+    const clients = rideConnections.get(rideId);
+    if (clients) {
+      const status = hasDispute ? 'disputed' : 'completed';
+      clients.forEach(client => {
+        if (client.readyState === WebSocket.OPEN) {
+          client.send(JSON.stringify({
+            type: 'ride_status_update',
+            ride_id: rideId,
+            status: status,
+            message: hasDispute 
+              ? 'Ride disputed. Resolution pending.' 
+              : 'Ride completed. Payment released.',
+            timestamp: new Date().toISOString()
+          }));
+        }
+      });
+    }
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error(`Error finalizing ride ${rideId}:`, error);
+  } finally {
+    client.release();
+  }
+}
+
+// Cron job for automatic verification expiration (runs hourly)
+cron.schedule('0 * * * *', async () => {
+  console.log('Processing pending ride verifications...');
+  const client = await pool.connect();
+  try {
+    // Get verifications pending >24 hours
+    const { rows } = await client.query(
+      `SELECT ride_id, user_id 
+       FROM ride_completion_verifications
+       WHERE status = 'pending'
+       AND created_at < NOW() - INTERVAL '24 HOURS'`
+    );
+    
+    for (const verification of rows) {
+      await client.query(
+        `UPDATE ride_completion_verifications
+         SET status = 'confirmed', verified_at = NOW()
+         WHERE ride_id = $1 AND user_id = $2`,
+        [verification.ride_id, verification.user_id]
+      );
+    }
+    
+    // Get rides with all verifications resolved
+    const completedRides = await client.query(
+      `SELECT ride_id
+       FROM (
+         SELECT ride_id, 
+                COUNT(*) FILTER (WHERE status != 'pending') as resolved_count,
+                COUNT(*) as total
+         FROM ride_completion_verifications
+         GROUP BY ride_id
+       ) AS counts
+       WHERE resolved_count = total`
+    );
+    
+    for (const ride of completedRides.rows) {
+      await finalizeRideCompletion(ride.ride_id);
+    }
+  } catch (error) {
+    console.error('Verification expiration error:', error);
+  } finally {
+    client.release();
+  }
+});
+
+// Implement after finalizing completion
+async function releasePayment(rideId) {
+  try {
+    // Get ride details
+    const ride = await query(
+      `SELECT driver_id, price_per_seat 
+       FROM rides WHERE id = $1`,
+      [rideId]
+    );
+    
+    // Calculate total amount (example)
+    const passengers = await query(
+      `SELECT COUNT(*) FROM user_rides 
+       WHERE ride_id = $1 AND is_driver = false`,
+      [rideId]
+    );
+    
+    const totalAmount = ride.price_per_seat * passengers.count;
+    
+    // TODO: Integrate with payment gateway
+    // paymentGateway.transfer(ride.driver_id, totalAmount);
+    
+    // Update payment status
+    await query(
+      `UPDATE rides 
+       SET payment_released = true, payment_released_at = NOW()
+       WHERE id = $1`,
+      [rideId]
+    );
+    
+    return true;
+  } catch (error) {
+    console.error(`Payment release failed for ride ${rideId}:`, error);
+    return false;
+  }
+}
+
 module.exports = router;

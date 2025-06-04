@@ -278,10 +278,10 @@ router.post('/', authenticate, validateCoordinates, async (req, res) => {
       `INSERT INTO rides 
        (driver_id, from_location, from_address, to_location, to_address, 
         total_seats, seats_available, departure_time, created_at,
-        plate_number, color, brand_name, price_per_seat, status)
+        plate_number, color, brand_name, price_per_seat)
        VALUES ($1, ST_SetSRID(ST_MakePoint($2, $3), 4326), $4, 
                ST_SetSRID(ST_MakePoint($5, $6), 4326), $7, 
-               $8, $9, $10, NOW(), $11, $12, $13, $14, 'active')
+               $8, $9, $10, NOW(), $11, $12, $13, $14)
        RETURNING *`,
       [
         req.user.id,
@@ -669,6 +669,7 @@ router.post('/:id/join', authenticate, async (req, res) => {
     const rideId = req.params.id;
     const userId = req.user.id;
 
+    // Check if user already joined
     const existingCheck = await client.query(
       'SELECT 1 FROM user_rides WHERE user_id = $1 AND ride_id = $2',
       [userId, rideId]
@@ -678,6 +679,7 @@ router.post('/:id/join', authenticate, async (req, res) => {
       throw new Error('User already joined this ride');
     }
 
+    // Get ride details with existence check
     const ride = await client.query(
       `SELECT status, seats_available, departure_time 
        FROM rides WHERE id = $1 FOR UPDATE`,
@@ -690,6 +692,7 @@ router.post('/:id/join', authenticate, async (req, res) => {
 
     const rideData = ride.rows[0];
 
+    // Validate ride conditions
     if (rideData.departure_time && new Date(rideData.departure_time) < new Date()) {
       throw new Error('Cannot join a ride that has already departed');
     }
@@ -702,22 +705,13 @@ router.post('/:id/join', authenticate, async (req, res) => {
       throw new Error('Ride is full');
     }
 
-    const updateResult = await client.query(
-      `UPDATE rides 
-       SET 
-         seats_available = seats_available - 1,
-         status = CASE 
-                    WHEN seats_available = 1 AND status = 'active' THEN 'ongoing'
-                    ELSE status
-                  END
-       WHERE id = $1 
-       RETURNING status`,
+    // Update seats
+    await client.query(
+      'UPDATE rides SET seats_available = seats_available - 1 WHERE id = $1',
       [rideId]
     );
 
-    const newStatus = updateResult.rows[0].status;
-    const wasActivated = (rideData.status === 'active' && newStatus === 'ongoing');
-
+    // Create user-ride association
     await client.query(
       'INSERT INTO user_rides (user_id, ride_id) VALUES ($1, $2)',
       [userId, rideId]
@@ -725,6 +719,7 @@ router.post('/:id/join', authenticate, async (req, res) => {
 
     await client.query('COMMIT');
     
+    // Notify WebSocket clients
     const clients = rideConnections.get(rideId);
     if (clients) {
       clients.forEach(client => {
@@ -735,16 +730,6 @@ router.post('/:id/join', authenticate, async (req, res) => {
             ride_id: rideId,
             timestamp: new Date().toISOString()
           }));
-          
-          if (wasActivated) {
-            client.send(JSON.stringify({
-              type: 'status_update',
-              ride_id: rideId,
-              new_status: 'ongoing',
-              message: 'Ride is now full and has started',
-              timestamp: new Date().toISOString()
-            }));
-          }
         }
       });
     }
@@ -764,20 +749,6 @@ router.post('/:id/leave', authenticate, async (req, res) => {
     await client.query('BEGIN');
     const rideId = req.params.id;
     const userId = req.user.id;
-
-    const rideStatusCheck = await client.query(
-      `SELECT status FROM rides WHERE id = $1 FOR UPDATE`,
-      [rideId]
-    );
-    
-    if (rideStatusCheck.rows.length === 0) {
-      throw new Error('Ride not found');
-    }
-    
-    const rideStatus = rideStatusCheck.rows[0].status;
-    if (rideStatus !== 'active') {
-      throw new Error('Cannot leave a ride that has already started');
-    }
 
     const userRideCheck = await client.query(
       `SELECT is_driver FROM user_rides 
@@ -800,6 +771,12 @@ router.post('/:id/leave', authenticate, async (req, res) => {
 
     await client.query(
       'UPDATE rides SET seats_available = seats_available + 1 WHERE id = $1',
+      [rideId]
+    );
+
+    await client.query(
+      `UPDATE rides SET status = 'active' 
+       WHERE id = $1 AND status = 'full' AND seats_available > 0`,
       [rideId]
     );
 
@@ -972,10 +949,12 @@ router.put('/:id/status', authenticate, async (req, res) => {
     const { status } = req.body;
     const userId = req.user.id;
 
+    // Validate new status
     if (!['ongoing', 'completed'].includes(status)) {
       return res.status(400).json({ error: 'Invalid status' });
     }
 
+    // Verify user is part of the ride
     const participantCheck = await client.query(
       `SELECT 1 FROM user_rides WHERE ride_id = $1 AND user_id = $2`,
       [rideId, userId]
@@ -984,6 +963,7 @@ router.put('/:id/status', authenticate, async (req, res) => {
       return res.status(403).json({ error: 'User not part of this ride' });
     }
 
+    // Get current ride status with lock
     const rideResult = await client.query(
       'SELECT status, driver_id FROM rides WHERE id = $1 FOR UPDATE',
       [rideId]
@@ -995,19 +975,21 @@ router.put('/:id/status', authenticate, async (req, res) => {
     const currentStatus = rideResult.rows[0].status;
     const isDriver = rideResult.rows[0].driver_id === userId;
 
+    // Validate status transitions
     if (status === 'ongoing') {
       if (!isDriver) {
         return res.status(403).json({ error: 'Only driver can start the ride' });
       }
-      if (currentStatus !== 'active') {
-        return res.status(400).json({ error: 'Ride must be active to start' });
+      if (!['active', 'full'].includes(currentStatus)) {
+        return res.status(400).json({ error: 'Ride must be active/full to start' });
       }
     } else if (status === 'completed') {
-      if (!['ongoing', 'active'].includes(currentStatus)) {
-        return res.status(400).json({ error: 'Ride must be ongoing or active to complete' });
+      if (currentStatus !== 'ongoing') {
+        return res.status(400).json({ error: 'Ride must be ongoing to complete' });
       }
     }
 
+    // Update ride status
     await client.query(
       'UPDATE rides SET status = $1 WHERE id = $2',
       [status, rideId]
@@ -1015,6 +997,7 @@ router.put('/:id/status', authenticate, async (req, res) => {
 
     await client.query('COMMIT');
 
+    // Notify participants via WebSocket
     const clients = rideConnections.get(rideId);
     if (clients) {
       clients.forEach(client => {
